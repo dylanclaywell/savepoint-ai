@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    # Windows is the v1 target; cargo/Tauri also build cleanly here (WebView2
+    # ships on the runner), so all three parts are validated on one OS.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- front-end (type-check + Vite build) ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Build front-end
+        run: npm run build
+
+      # --- Python sidecar (deps + import smoke) ---
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install sidecar deps
+        run: uv sync --frozen
+        working-directory: sidecar
+      - name: Sidecar import smoke test
+        run: uv run python -c "import app.main; app.main.create_app(__import__('pathlib').Path('.')); print('sidecar imports ok')"
+        working-directory: sidecar
+
+      # --- Rust core (compile check) ---
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check
+        run: cargo check
+        working-directory: src-tauri

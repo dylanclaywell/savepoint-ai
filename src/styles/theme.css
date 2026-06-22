@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+/* Savepoint AI — design tokens (Tailwind v4, CSS-first).
+ *
+ * Direction: a distraction-free e-ink writer meets a LaTeX document viewer.
+ * The conversation is a typeset manuscript (Fraunces, justified, ink on paper);
+ * the controls are quietly defined. Light-first by intent — it is paper. */
+@theme {
+  --color-bg: #f3f1ea; /* warm paper */
+  --color-surface: #faf8f2; /* raised control fill */
+  --color-ink: #211f1a;
+  --color-ink-soft: #6f685c;
+  --color-faint: #9a9284;
+  --color-red: #c1452f; /* the single accent — vermilion */
+  --color-red-soft: rgba(193, 69, 47, 0.1);
+
+  --color-rule: rgba(33, 31, 26, 0.1); /* hairline dividers */
+  --color-line: rgba(33, 31, 26, 0.13); /* control border */
+  --color-line-strong: rgba(33, 31, 26, 0.2);
+
+  --font-serif: "Fraunces", Georgia, serif;
+  --font-ui: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+/* Dark mode — warm "paper at night", same e-ink calm and vermilion accent.
+ * Utilities compile to var(--color-*), so re-declaring those vars reskins the
+ * whole app. `system` mode leaves no data-theme attr and follows the OS; an
+ * explicit choice sets data-theme="light|dark". */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #1a1714;
+    --color-surface: #221e18;
+    --color-ink: #e8e3d8;
+    --color-ink-soft: #a59c8c;
+    --color-faint: #756c5d;
+    --color-red: #df5a44;
+    --color-red-soft: rgba(223, 90, 68, 0.14);
+    --color-rule: rgba(232, 227, 216, 0.1);
+    --color-line: rgba(232, 227, 216, 0.14);
+    --color-line-strong: rgba(232, 227, 216, 0.22);
+    color-scheme: dark;
+  }
+}
+
+[data-theme="dark"] {
+  --color-bg: #1a1714;
+  --color-surface: #221e18;
+  --color-ink: #e8e3d8;
+  --color-ink-soft: #a59c8c;
+  --color-faint: #756c5d;
+  --color-red: #df5a44;
+  --color-red-soft: rgba(223, 90, 68, 0.14);
+  --color-rule: rgba(232, 227, 216, 0.1);
+  --color-line: rgba(232, 227, 216, 0.14);
+  --color-line-strong: rgba(232, 227, 216, 0.22);
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    font-family: var(--font-serif);
+    /* LaTeX-ish: ligatures, old-style numerals, contextual alternates. */
+    font-feature-settings: "liga" 1, "onum" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  #app {
+    height: 100vh;
+  }
+  ::selection {
+    background: var(--color-red-soft);
+  }
+}
+
+/* Shared typeset rendering for markdown (chat replies + document viewer).
+ * Stays in the paper/serif language; paragraphs justify like the rest. */
+.prose {
+  font-size: 1.1rem;
+  line-height: 1.72;
+}
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose h1,
+.prose h2,
+.prose h3 {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 1.3em 0 0.5em;
+}
+.prose h1 {
+  font-size: 1.45rem;
+}
+.prose h2 {
+  font-size: 1.22rem;
+}
+.prose h3 {
+  font-size: 1.06rem;
+}
+.prose p {
+  margin: 0 0 0.7em;
+  text-align: justify;
+  hyphens: auto;
+}
+.prose ul,
+.prose ol {
+  margin: 0 0 0.7em;
+  padding-left: 1.3em;
+}
+.prose ul {
+  list-style: disc;
+}
+.prose ol {
+  list-style: decimal;
+}
+.prose li {
+  margin: 0 0 0.3em;
+}
+.prose code {
+  font-family: var(--font-ui);
+  font-size: 0.86em;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 5px;
+  padding: 0.05em 0.4em;
+}
+.prose pre {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 0 0 0.9em;
+}
+.prose pre code {
+  border: none;
+  background: none;
+  padding: 0;
+}
+.prose blockquote {
+  border-left: 2.5px solid var(--color-red);
+  padding-left: 14px;
+  color: var(--color-ink-soft);
+  font-style: italic;
+  margin: 0 0 0.8em;
+}
+.prose a {
+  color: var(--color-red);
+  text-decoration: underline;
+}
+.prose strong {
+  font-weight: 600;
+}
+.prose em {
+  font-style: italic;
+}
