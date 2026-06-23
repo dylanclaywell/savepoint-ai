@@ -35,6 +35,8 @@ export const useAppStore = defineStore("app", () => {
   const documents = ref<DocumentMeta[]>([]);
   const conversations = ref<Conversation[]>([]);
   const currentConversationId = ref<number | null>(null);
+  // Set to ask the Documents view to open a specific doc (e.g. a fresh AI draft).
+  const requestedDocId = ref<number | null>(null);
 
   /** Boot sequence: wait for sidecar, load everything, auto-pick a model. */
   async function init() {
@@ -129,6 +131,12 @@ export const useAppStore = defineStore("app", () => {
     documents.value = await listDocuments(port.value);
   }
 
+  /** Refresh the list and ask the Documents view to open `id`. */
+  async function openDocumentInLibrary(id: number) {
+    await refreshDocuments();
+    requestedDocId.value = id;
+  }
+
   // ---- conversations ------------------------------------------------------
 
   async function refreshConversations() {
@@ -172,6 +180,7 @@ export const useAppStore = defineStore("app", () => {
     documents,
     conversations,
     currentConversationId,
+    requestedDocId,
     init,
     refreshModels,
     refreshConfig,
@@ -182,6 +191,7 @@ export const useAppStore = defineStore("app", () => {
     renameWorkspace,
     deleteWorkspace,
     refreshDocuments,
+    openDocumentInLibrary,
     refreshConversations,
     newConversation,
     openConversation,

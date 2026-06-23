@@ -57,6 +57,11 @@ class KbSearch(BaseModel):
     k: int = 5
 
 
+class DraftRequest(BaseModel):
+    conversation_id: int | None = None
+    instruction: str = ""
+
+
 class ConversationCreate(BaseModel):
     title: str = ""
 
@@ -250,6 +255,50 @@ def create_app(data_dir: Path) -> FastAPI:
         except OllamaError as e:
             raise HTTPException(status_code=502, detail=str(e))
         return {"indexed": count}
+
+    @app.post("/documents/draft")
+    async def draft_document(req: DraftRequest) -> dict:
+        ws_id = active_ws_id()
+        cfg = settings.get_all()
+        model = cfg.get("chat_model")
+        if not model:
+            raise HTTPException(status_code=400, detail="no chat model selected")
+
+        system = (
+            "You help a game designer turn a discussion into a concise design "
+            "document. Capture the decisions actually made and the open questions "
+            "raised — do not invent mechanics that weren't discussed; mark "
+            "anything unresolved as an open question. Respond with a JSON object "
+            'with exactly two keys: "title" (a short document title) and '
+            '"body_markdown" (a well-structured markdown document).'
+        )
+        messages: list[dict] = [{"role": "system", "content": system}]
+        if req.conversation_id is not None:
+            conv = workspaces.get_conversation(ws_id, req.conversation_id)
+            if conv is None:
+                raise HTTPException(status_code=404, detail="no such conversation")
+            messages += [
+                {"role": m["role"], "content": m["content"]} for m in conv["messages"]
+            ]
+        instruction = req.instruction.strip() or "Draft the design document now."
+        messages.append({"role": "user", "content": instruction})
+
+        try:
+            raw = await ollama.chat(model, messages, format="json")
+        except OllamaError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        # Parse the model's JSON; fall back to treating the text as the body.
+        title, body = "Untitled draft", raw.strip()
+        try:
+            parsed = json.loads(raw)
+            title = (parsed.get("title") or title).strip()
+            body = (parsed.get("body_markdown") or body).strip()
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+        # AI drafts are review-gated: saved out of the KB until the user approves.
+        return workspaces.create_document(ws_id, title, body, source="ai", in_kb=False)
 
     @app.post("/kb/search")
     async def kb_search(req: KbSearch) -> dict:

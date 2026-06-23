@@ -14,8 +14,14 @@ import { PhPencilSimple, PhTrash, PhPlus } from "@phosphor-icons/vue";
 type Tab = "conversations" | "documents" | "settings";
 
 const store = useAppStore();
-const { status, error, config, workspaces, activeWorkspace } = storeToRefs(store);
+const { status, error, config, workspaces, activeWorkspace, requestedDocId } =
+  storeToRefs(store);
 const tab = ref<Tab>("conversations");
+
+// A drafted/linked document jumps the user to the Documents tab.
+watch(requestedDocId, (id) => {
+  if (id != null) tab.value = "documents";
+});
 
 const tabs: { id: Tab; label: string }[] = [
   { id: "conversations", label: "Conversations" },

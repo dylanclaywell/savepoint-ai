@@ -2,9 +2,21 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
-import { getConversation, streamChat, type ChatMessage, type Source } from "../api/sidecar";
+import {
+  getConversation,
+  streamChat,
+  draftDocument,
+  type ChatMessage,
+  type Source,
+} from "../api/sidecar";
 import { renderMarkdown } from "../lib/markdown";
-import { PhArrowLeft, PhCaretRight, PhPaperPlaneRight, PhBooks } from "@phosphor-icons/vue";
+import {
+  PhArrowLeft,
+  PhCaretRight,
+  PhPaperPlaneRight,
+  PhBooks,
+  PhNotePencil,
+} from "@phosphor-icons/vue";
 
 type Msg = ChatMessage & { sources?: Source[] };
 
@@ -23,8 +35,27 @@ const scroller = ref<HTMLElement | null>(null);
 const useRag = ref(localStorage.getItem("savepoint-rag") === "1");
 watch(useRag, (v) => localStorage.setItem("savepoint-rag", v ? "1" : "0"));
 
+const drafting = ref(false);
+
 const canChat = computed(() => !!config.value?.chat_model && port.value != null);
 const hasEmbedModel = computed(() => !!config.value?.embed_model);
+
+async function draftDoc() {
+  if (port.value == null || drafting.value || messages.value.length === 0) return;
+  drafting.value = true;
+  errorMsg.value = "";
+  try {
+    const doc = await draftDocument(port.value, {
+      conversation_id: props.conversationId,
+    });
+    // Jump to the Documents tab with the new draft open for review.
+    await store.openDocumentInLibrary(doc.id);
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    drafting.value = false;
+  }
+}
 
 function labelFor(role: string) {
   return role === "assistant" ? "partner" : "you";
@@ -94,12 +125,22 @@ function onKeydown(e: KeyboardEvent) {
       class="mx-auto flex w-full max-w-[740px] items-baseline justify-between gap-6 border-b border-rule px-14 pb-4 text-[0.86rem] italic text-faint"
     >
       <button
-        class="flex items-center gap-1.5 not-italic text-ink-soft hover:text-ink"
+        class="flex shrink-0 items-center gap-1.5 not-italic text-ink-soft hover:text-ink"
         @click="store.closeConversation()"
       >
         <PhArrowLeft :size="14" weight="light" /> conversations
       </button>
-      <span class="truncate">{{ title || "untitled thread" }}</span>
+      <span class="min-w-0 flex-1 truncate text-center">{{ title || "untitled thread" }}</span>
+      <button
+        v-if="messages.length"
+        :disabled="drafting"
+        class="flex shrink-0 items-center gap-1.5 not-italic text-ink-soft hover:text-ink disabled:opacity-50"
+        title="Draft a design document from this conversation"
+        @click="draftDoc"
+      >
+        <PhNotePencil :size="14" weight="light" />
+        {{ drafting ? "drafting…" : "draft doc" }}
+      </button>
     </div>
 
     <div ref="scroller" class="flex-1 overflow-y-auto">

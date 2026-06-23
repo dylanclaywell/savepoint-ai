@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
 import {
@@ -14,7 +14,7 @@ import { confirmDialog } from "../lib/dialog";
 import { PhArrowLeft, PhCheck, PhPlus } from "@phosphor-icons/vue";
 
 const store = useAppStore();
-const { documents, activeWorkspace, port } = storeToRefs(store);
+const { documents, activeWorkspace, port, requestedDocId } = storeToRefs(store);
 
 type Mode = "list" | "view" | "edit";
 const mode = ref<Mode>("list");
@@ -36,6 +36,14 @@ async function open(id: number) {
   current.value = await getDocument(port.value, id);
   mode.value = "view";
 }
+
+// Open a doc requested from elsewhere (e.g. a freshly drafted AI document).
+watch(requestedDocId, async (id) => {
+  if (id != null) {
+    await open(id);
+    requestedDocId.value = null;
+  }
+});
 
 function newDoc() {
   current.value = null;
@@ -186,6 +194,14 @@ const headLabel = computed(() =>
           <PhCheck v-if="current.in_kb" :size="13" weight="bold" />
           {{ current.in_kb ? "in knowledge base" : "add to knowledge base" }}
         </button>
+
+        <p
+          v-if="current.source === 'ai' && !current.in_kb"
+          class="mt-4 rounded-lg border border-line bg-surface px-3.5 py-2.5 text-[0.9rem] italic text-ink-soft"
+        >
+          A draft from your conversation. Edit it to your taste, then add it to the
+          knowledge base when it's ready.
+        </p>
 
         <article class="prose mt-7" v-html="rendered" />
       </template>

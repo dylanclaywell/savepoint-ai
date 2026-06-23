@@ -222,6 +222,20 @@ export async function deleteDocument(port: number, id: number): Promise<void> {
   await jsonOrThrow(res, "could not delete document");
 }
 
+/** Ask the model to draft a design document (saved as a review-gated `ai` draft,
+ * not yet in the KB). Optionally grounded in a conversation. */
+export async function draftDocument(
+  port: number,
+  opts: { conversation_id?: number; instruction?: string } = {},
+): Promise<Document> {
+  const res = await fetch(url(port, "/documents/draft"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(opts),
+  });
+  return jsonOrThrow(res, "could not draft document");
+}
+
 // ---- conversations (scoped to the active workspace) -----------------------
 
 export async function listConversations(port: number): Promise<Conversation[]> {

@@ -168,8 +168,14 @@ messages(id, conversation_id, role, content, created_at)
 > unindex on removal), `/kb/search` + `/kb/reindex`, and a chat "Knowledge base"
 > toggle that grounds replies in the active game's docs and cites sources.
 > Embeddings use Ollama's legacy `/api/embeddings` (the batch `/api/embed` 404s
-> on some builds). Next: **M4** (AI-drafted design docs), or sidecar packaging
-> for real releases.
+> on some builds).
+> **M4 ✅** — AI-drafted design docs: `POST /documents/draft` turns a conversation
+> into a titled markdown doc (model returns JSON via `format=json`), saved
+> `source=ai` + `in_kb=false` (review-gated, not auto-grounded). "draft doc" in
+> the conversation header → jumps to the new draft in Documents with a review
+> banner; user edits then opts into the KB. New *manual* docs still default into
+> the KB. Next: **sidecar packaging** (PyInstaller `externalBin`) for real
+> releases.
 
 ### M0 — Scaffolding & plumbing
 - Init Tauri + Vue 3 + TS + Vite project.
