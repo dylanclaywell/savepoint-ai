@@ -79,6 +79,28 @@ class OllamaClient:
                 raise OllamaError(f"chat request failed: {e}") from e
         return resp.json().get("message", {}).get("content", "")
 
+    async def chat_tools(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        options: dict | None = None,
+    ) -> dict:
+        """Non-streaming chat that may request tool calls. Returns the full
+        assistant message dict (``content`` and/or ``tool_calls``)."""
+        payload: dict = {"model": model, "messages": messages, "stream": False}
+        if tools:
+            payload["tools"] = tools
+        if options:
+            payload["options"] = options
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                resp = await client.post(f"{self.host}/api/chat", json=payload)
+                resp.raise_for_status()
+            except httpx.HTTPError as e:
+                raise OllamaError(f"chat request failed: {e}") from e
+        return resp.json().get("message", {})
+
     async def chat_stream(
         self,
         model: str,

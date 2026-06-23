@@ -184,6 +184,29 @@ messages(id, conversation_id, role, content, created_at)
 > **Chat status feedback ✅** — RAG retrieval + generation run inside the SSE
 > stream, emitting `status` events (searching → thinking) before token streaming,
 > shown live in the conversation.
+>
+> **Update (2026-06-23):**
+> - **Chat controls ✅** — stop/abort a streaming reply, regenerate the last
+>   answer, "generate reply" recovery when a turn has no answer, inline
+>   conversation rename, auto-growing composer (Shift+Enter newline).
+> - **RAG grounding fixes ✅** — Knowledge base toggle defaults on;
+>   `delete_document` clears vec0 embeddings (FK cascade misses the virtual
+>   table); `/kb/reindex` prunes orphaned vectors. (Hallucination reports traced
+>   to RAG being off, not a retrieval bug — search verified healthy.)
+> - **Web search ✅** — optional Tavily integration. Started as context
+>   injection; **now agentic tool-calling** (`tools.py` registry +
+>   `OllamaClient.chat_tools`): the model is offered a `web_search` tool and
+>   calls it only when it judges it needed (no more searching every turn). Cited
+>   `web_sources` open in the browser (opener plugin). The Tavily key lives in
+>   the **OS keychain** (`keyring`, `secrets_store.py`), never in `app.db`;
+>   `/config` exposes only `has_tavily_key`; startup migrates any legacy key out
+>   of the DB. PyInstaller spec bundles keyring's OS backends.
+> - **Settings ✅** — web key field; **generation controls** (temperature
+>   slider, top_p, max reply tokens) wired to Ollama `options`.
+>
+> **Open / next ideas:** edit/delete individual chat turns; cross-workspace KB
+> references (SQLite `ATTACH`); KB-as-a-tool (agentic retrieval); temperature
+> control in Settings; tests + CI hardening; cut a real tagged release.
 
 ### M0 — Scaffolding & plumbing
 - Init Tauri + Vue 3 + TS + Vite project.

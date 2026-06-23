@@ -123,7 +123,9 @@ async function runStream(content: string, regenerate: boolean) {
   // trigger re-renders. Mutating the pre-push object bypasses Vue's proxy.
   const assistant = messages.value[messages.value.length - 1];
   streaming.value = true;
-  status.value = useRag.value ? "searching" : useWeb.value ? "searching_web" : "thinking";
+  // Web is model-decided now, so don't presume a search; the server emits
+  // "searching_web" only if the model actually calls the tool.
+  status.value = useRag.value ? "searching" : "thinking";
   controller = new AbortController();
   await scrollToBottom();
 
@@ -397,7 +399,7 @@ function onKeydown(e: KeyboardEvent) {
         "
         :title="
           hasWebKey
-            ? 'Ground replies in a web search (your query leaves your machine)'
+            ? 'Let the partner search the web when it decides it is needed (queries leave your machine)'
             : 'Add a Tavily API key in Settings to use this'
         "
         @click="useWeb = !useWeb"

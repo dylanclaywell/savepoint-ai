@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import __version__, rag, secrets_store, web
+from . import __version__, rag, secrets_store, tools, web
 from .config import Settings
 from .ollama_client import OllamaClient, OllamaError
 from .web import WebError
@@ -445,15 +445,17 @@ def create_app(data_dir: Path) -> FastAPI:
         embed_model = cfg.get("embed_model")
         use_rag = req.use_rag and bool(embed_model)
         tavily_key = secrets_store.get_tavily_key()
-        use_web = req.use_web and bool(tavily_key)
+        chat_tools = tools.available_tools(req.use_web, bool(tavily_key))
+        MAX_TOOL_ROUNDS = 3
 
-        # RAG retrieval + generation run inside the stream so the UI can show
-        # each stage (searching the knowledge base → thinking → tokens).
+        def sse(obj: dict) -> str:
+            return f"data: {json.dumps(obj)}\n\n"
+
         async def event_stream():
-            reply = []
             try:
+                # Knowledge base stays injection-based (opt-in per chat).
                 if use_rag:
-                    yield f"data: {json.dumps({'status': 'searching'})}\n\n"
+                    yield sse({"status": "searching"})
                     try:
                         qv = (await ollama.embed(embed_model, [last_user]))[0]
                         hits = workspaces.search(ws_id, qv, 5)
@@ -465,51 +467,69 @@ def create_app(data_dir: Path) -> FastAPI:
                             {"role": "system", "content": rag.build_context(hits)},
                         )
                         seen: set[int] = set()
-                        sources: list[dict] = []
+                        srcs: list[dict] = []
                         for h in hits:
                             if h["document_id"] not in seen:
                                 seen.add(h["document_id"])
-                                sources.append(
+                                srcs.append(
                                     {"document_id": h["document_id"], "title": h["title"]}
                                 )
-                        yield f"data: {json.dumps({'sources': sources})}\n\n"
+                        yield sse({"sources": srcs})
 
-                if use_web:
-                    yield f"data: {json.dumps({'status': 'searching_web'})}\n\n"
-                    try:
-                        results = await web.tavily_search(tavily_key, last_user, 5)
-                    except WebError:
-                        results = []
-                    if results:
-                        messages.insert(
-                            len(messages) - 1,
-                            {"role": "system", "content": web.build_web_context(results)},
+                # No tools available → stream the reply token-by-token.
+                if not chat_tools:
+                    yield sse({"status": "thinking"})
+                    reply: list[str] = []
+                    async for token in ollama.chat_stream(model, messages, options):
+                        reply.append(token)
+                        yield sse({"token": token})
+                    if reply:
+                        workspaces.add_message(
+                            ws_id, req.conversation_id, "assistant", "".join(reply)
                         )
-                        yield (
-                            "data: "
-                            + json.dumps(
-                                {
-                                    "web_sources": [
-                                        {"title": r["title"], "url": r["url"]}
-                                        for r in results
-                                    ]
-                                }
-                            )
-                            + "\n\n"
-                        )
+                    yield "data: [DONE]\n\n"
+                    return
 
-                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
-                async for token in ollama.chat_stream(model, messages, options):
-                    reply.append(token)
-                    yield f"data: {json.dumps({'token': token})}\n\n"
-                # Persist the assistant's full turn once the stream completes.
-                if reply:
-                    workspaces.add_message(
-                        ws_id, req.conversation_id, "assistant", "".join(reply)
+                # Tools available → the model decides whether/when to call them.
+                ctx = {"tavily_key": tavily_key, "last_user": last_user}
+                web_sources: list[dict] = []
+                final: str | None = None
+                for _ in range(MAX_TOOL_ROUNDS):
+                    msg = await ollama.chat_tools(model, messages, chat_tools, options)
+                    calls = msg.get("tool_calls") or []
+                    if not calls:
+                        final = msg.get("content") or ""
+                        break
+                    messages.append(
+                        {"role": "assistant", "content": msg.get("content") or "",
+                         "tool_calls": calls}
                     )
+                    for tc in calls:
+                        fn = tc.get("function") or {}
+                        if fn.get("name") == "web_search":
+                            yield sse({"status": "searching_web"})
+                        result = await tools.run_tool(
+                            fn.get("name", ""), fn.get("arguments", {}), ctx
+                        )
+                        for s in result.get("sources", []):
+                            if s not in web_sources:
+                                web_sources.append(s)
+                        if result.get("sources"):
+                            yield sse({"web_sources": web_sources})
+                        messages.append({"role": "tool", "content": result["text"]})
+                if final is None:
+                    # Exhausted tool rounds — force a final answer without tools.
+                    msg = await ollama.chat_tools(model, messages, None, options)
+                    final = msg.get("content") or ""
+
+                # Stream the final answer (chunked for a streamed feel).
+                yield sse({"status": "thinking"})
+                for i in range(0, len(final), 24):
+                    yield sse({"token": final[i : i + 24]})
+                workspaces.add_message(ws_id, req.conversation_id, "assistant", final)
                 yield "data: [DONE]\n\n"
-            except OllamaError as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            except (OllamaError, WebError) as e:
+                yield sse({"error": str(e)})
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 

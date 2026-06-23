@@ -19,6 +19,24 @@ const webBusy = ref(false);
 
 const hasWebKey = computed(() => !!config.value?.has_tavily_key);
 
+// Generation params (Ollama options). Temperature always sent; the others are
+// optional (blank → omit → model default).
+const temperature = ref(0.7);
+const topP = ref<number | null>(null);
+const maxTokens = ref<number | null>(null);
+const genNote = ref("");
+
+async function saveGenParams() {
+  const gp: Record<string, number> = { temperature: temperature.value };
+  if (typeof topP.value === "number" && !Number.isNaN(topP.value)) gp.top_p = topP.value;
+  if (typeof maxTokens.value === "number" && !Number.isNaN(maxTokens.value)) {
+    gp.num_predict = maxTokens.value;
+  }
+  await store.update({ gen_params: gp });
+  genNote.value = "saved";
+  setTimeout(() => (genNote.value = ""), 1500);
+}
+
 const embedModels = computed(() =>
   models.value.filter((m) => m.capabilities?.includes("embedding")),
 );
@@ -49,7 +67,12 @@ async function rebuildKb() {
 watch(
   config,
   (c) => {
-    if (c) systemPrompt.value = c.system_prompt;
+    if (!c) return;
+    systemPrompt.value = c.system_prompt;
+    const gp = (c.gen_params ?? {}) as Record<string, number>;
+    if (typeof gp.temperature === "number") temperature.value = gp.temperature;
+    topP.value = typeof gp.top_p === "number" ? gp.top_p : null;
+    maxTokens.value = typeof gp.num_predict === "number" ? gp.num_predict : null;
   },
   { immediate: true },
 );
@@ -180,6 +203,57 @@ function fmtSize(bytes: number) {
             Save prompt
           </button>
           <span v-if="savedNote" class="font-ui text-[0.82rem] italic text-red">{{ savedNote }}</span>
+        </div>
+      </section>
+
+      <!-- generation params -->
+      <section class="mt-10">
+        <label class="text-[1.05rem] italic text-ink-soft">generation</label>
+        <p class="mb-3 mt-1 text-[0.9rem] text-ink-soft">
+          Tune the model's sampling. Lower temperature → more literal and
+          rule-following; higher → more varied.
+        </p>
+        <div class="flex items-center gap-3">
+          <span class="w-28 font-ui text-[0.85rem] text-ink-soft">temperature</span>
+          <input
+            v-model.number="temperature"
+            type="range"
+            min="0"
+            max="1.5"
+            step="0.1"
+            class="flex-1 accent-red"
+          />
+          <span class="w-10 text-right font-ui text-[0.85rem]">{{ temperature.toFixed(1) }}</span>
+        </div>
+        <div class="mt-2 flex items-center gap-3">
+          <span class="w-28 font-ui text-[0.85rem] text-ink-soft">top_p</span>
+          <input
+            v-model.number="topP"
+            type="number"
+            min="0"
+            max="1"
+            step="0.05"
+            placeholder="default"
+            class="w-28 rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 font-ui text-[0.85rem] outline-none focus:border-red"
+          />
+          <span class="w-28 font-ui text-[0.85rem] text-ink-soft">max reply tokens</span>
+          <input
+            v-model.number="maxTokens"
+            type="number"
+            min="1"
+            step="64"
+            placeholder="default"
+            class="w-28 rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 font-ui text-[0.85rem] outline-none focus:border-red"
+          />
+        </div>
+        <div class="mt-3 flex items-center gap-3">
+          <button
+            class="rounded-[10px] bg-red px-4 py-2 font-ui text-sm font-medium text-white shadow-[0_2px_8px_rgba(193,69,47,0.32)] transition hover:brightness-105"
+            @click="saveGenParams"
+          >
+            Save generation
+          </button>
+          <span v-if="genNote" class="font-ui text-[0.82rem] italic text-red">{{ genNote }}</span>
         </div>
       </section>
 
