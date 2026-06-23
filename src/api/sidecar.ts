@@ -23,6 +23,7 @@ export interface Config {
   embed_model: string | null;
   system_prompt: string;
   gen_params: Record<string, unknown>;
+  has_tavily_key: boolean; // whether a key is stored (the key itself never leaves the keychain)
 }
 
 export interface ChatMessage {
@@ -293,6 +294,37 @@ export interface Source {
   title: string;
 }
 
+export interface WebSource {
+  title: string;
+  url: string;
+}
+
+/** Store (or clear, if empty) the Tavily key in the OS keychain. */
+export async function setTavilyKey(
+  port: number,
+  key: string,
+): Promise<{ has_tavily_key: boolean }> {
+  const res = await fetch(url(port, "/secrets/tavily"), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  });
+  return jsonOrThrow(res, "could not save the API key");
+}
+
+export async function webSearch(
+  port: number,
+  query: string,
+): Promise<{ title: string; url: string; content?: string }[]> {
+  const res = await fetch(url(port, "/web/search"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query }),
+  });
+  const data = await jsonOrThrow<{ results: WebSource[] }>(res, "web search failed");
+  return data.results;
+}
+
 export async function kbReindex(port: number): Promise<number> {
   const data = await jsonOrThrow<{ indexed: number }>(
     await fetch(url(port, "/kb/reindex"), { method: "POST" }),
@@ -313,8 +345,10 @@ export async function streamChat(
   handlers: {
     onToken: (token: string) => void;
     onSources?: (sources: Source[]) => void;
+    onWebSources?: (sources: WebSource[]) => void;
     onStatus?: (status: string) => void;
     useRag?: boolean;
+    useWeb?: boolean;
     regenerate?: boolean;
     model?: string;
     signal?: AbortSignal;
@@ -328,6 +362,7 @@ export async function streamChat(
       content,
       model: handlers.model,
       use_rag: handlers.useRag ?? false,
+      use_web: handlers.useWeb ?? false,
       regenerate: handlers.regenerate ?? false,
     }),
     signal: handlers.signal,
@@ -358,6 +393,7 @@ export async function streamChat(
       if (parsed.error) throw new Error(parsed.error);
       if (parsed.status) handlers.onStatus?.(parsed.status);
       if (parsed.sources) handlers.onSources?.(parsed.sources);
+      if (parsed.web_sources) handlers.onWebSources?.(parsed.web_sources);
       if (parsed.token) handlers.onToken(parsed.token);
     }
   }

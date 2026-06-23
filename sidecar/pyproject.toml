@@ -9,6 +9,7 @@ dependencies = [
     "uvicorn[standard]>=0.32",
     "httpx>=0.28",
     "sqlite-vec>=0.1.6",
+    "keyring>=25.5",
 ]
 
 [project.scripts]

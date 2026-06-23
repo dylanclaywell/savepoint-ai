@@ -8,8 +8,10 @@ import {
   draftDocument,
   type ChatMessage,
   type Source,
+  type WebSource,
 } from "../api/sidecar";
 import { renderMarkdown } from "../lib/markdown";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   PhArrowLeft,
   PhCaretRight,
@@ -19,9 +21,10 @@ import {
   PhArrowsClockwise,
   PhStop,
   PhPencilSimple,
+  PhGlobe,
 } from "@phosphor-icons/vue";
 
-type Msg = ChatMessage & { sources?: Source[] };
+type Msg = ChatMessage & { sources?: Source[]; webSources?: WebSource[] };
 
 const props = defineProps<{ conversationId: number }>();
 
@@ -59,17 +62,22 @@ const lastIsAssistant = computed(
 
 function statusText(s: string) {
   if (s === "searching") return "searching the knowledge base…";
+  if (s === "searching_web") return "searching the web…";
   if (s === "thinking") return "thinking…";
   return "now";
 }
 
-const useRag = ref(localStorage.getItem("savepoint-rag") === "1");
+// KB defaults on (docs auto-join it); web defaults off (queries leave the machine).
+const useRag = ref(localStorage.getItem("savepoint-rag") !== "0");
 watch(useRag, (v) => localStorage.setItem("savepoint-rag", v ? "1" : "0"));
+const useWeb = ref(localStorage.getItem("savepoint-web") === "1");
+watch(useWeb, (v) => localStorage.setItem("savepoint-web", v ? "1" : "0"));
 
 const drafting = ref(false);
 
 const canChat = computed(() => !!config.value?.chat_model && port.value != null);
 const hasEmbedModel = computed(() => !!config.value?.embed_model);
+const hasWebKey = computed(() => !!config.value?.has_tavily_key);
 
 async function draftDoc() {
   if (port.value == null || drafting.value || messages.value.length === 0) return;
@@ -115,13 +123,14 @@ async function runStream(content: string, regenerate: boolean) {
   // trigger re-renders. Mutating the pre-push object bypasses Vue's proxy.
   const assistant = messages.value[messages.value.length - 1];
   streaming.value = true;
-  status.value = useRag.value ? "searching" : "thinking";
+  status.value = useRag.value ? "searching" : useWeb.value ? "searching_web" : "thinking";
   controller = new AbortController();
   await scrollToBottom();
 
   try {
     await streamChat(port.value, props.conversationId, content, {
       useRag: useRag.value,
+      useWeb: useWeb.value,
       regenerate,
       signal: controller.signal,
       onStatus: (s) => {
@@ -134,6 +143,9 @@ async function runStream(content: string, regenerate: boolean) {
       },
       onSources: (sources) => {
         assistant.sources = sources;
+      },
+      onWebSources: (sources) => {
+        assistant.webSources = sources;
       },
     });
     // Server may have just named the conversation; reflect that.
@@ -303,6 +315,22 @@ function onKeydown(e: KeyboardEvent) {
               </span>
             </div>
 
+            <div
+              v-if="m.webSources?.length"
+              class="mt-2.5 flex flex-wrap items-center gap-2 font-ui text-[0.72rem] text-faint"
+            >
+              <span class="italic">from the web</span>
+              <button
+                v-for="s in m.webSources"
+                :key="s.url"
+                class="max-w-[260px] truncate rounded border border-line px-1.5 py-0.5 hover:border-red hover:text-red"
+                :title="s.url"
+                @click="openUrl(s.url)"
+              >
+                {{ s.title }}
+              </button>
+            </div>
+
             <!-- Regenerate the latest partner reply. -->
             <button
               v-if="
@@ -341,7 +369,7 @@ function onKeydown(e: KeyboardEvent) {
       {{ errorMsg }}
     </p>
 
-    <div class="mx-auto flex w-full max-w-[740px] justify-end px-14 pt-2">
+    <div class="mx-auto flex w-full max-w-[740px] justify-end gap-2 px-14 pt-2">
       <button
         type="button"
         class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-ui text-[0.74rem] transition"
@@ -358,6 +386,23 @@ function onKeydown(e: KeyboardEvent) {
         @click="useRag = !useRag"
       >
         <PhBooks :size="14" :weight="useRag ? 'bold' : 'light'" /> Knowledge base
+      </button>
+      <button
+        type="button"
+        class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-ui text-[0.74rem] transition"
+        :class="
+          useWeb
+            ? 'border-red bg-red-soft text-red'
+            : 'border-line text-ink-soft hover:text-ink'
+        "
+        :title="
+          hasWebKey
+            ? 'Ground replies in a web search (your query leaves your machine)'
+            : 'Add a Tavily API key in Settings to use this'
+        "
+        @click="useWeb = !useWeb"
+      >
+        <PhGlobe :size="14" :weight="useWeb ? 'bold' : 'light'" /> Web
       </button>
     </div>
 

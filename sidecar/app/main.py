@@ -22,9 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import __version__, rag
+from . import __version__, rag, secrets_store, web
 from .config import Settings
 from .ollama_client import OllamaClient, OllamaError
+from .web import WebError
 from .workspaces import Workspaces
 
 
@@ -50,12 +51,18 @@ class ChatRequest(BaseModel):
     content: str = ""
     model: str | None = None  # overrides the sticky configured model
     use_rag: bool = False  # ground the reply in the active game's knowledge base
+    use_web: bool = False  # ground the reply in a Tavily web search
     regenerate: bool = False  # re-answer the last user turn (drop the prior reply)
 
 
 class KbSearch(BaseModel):
     query: str
     k: int = 5
+
+
+class WebSearch(BaseModel):
+    query: str
+    max_results: int = 5
 
 
 class DraftRequest(BaseModel):
@@ -76,6 +83,10 @@ class ConfigUpdate(BaseModel):
     embed_model: str | None = None
     system_prompt: str | None = None
     gen_params: dict | None = None
+
+
+class TavilyKey(BaseModel):
+    key: str
 
 
 class WorkspaceCreate(BaseModel):
@@ -118,6 +129,13 @@ def create_app(data_dir: Path) -> FastAPI:
     settings = Settings(data_dir)
     workspaces = Workspaces(data_dir)
     ollama = OllamaClient()
+
+    # Migrate a Tavily key that an earlier version stored in app.db into the
+    # OS keychain, then scrub it from the DB.
+    if not secrets_store.get_tavily_key():
+        legacy = settings.take_raw("tavily_api_key")
+        if legacy:
+            secrets_store.set_tavily_key(legacy)
 
     def active_ws_id() -> int:
         ws_id = settings.get("active_workspace")
@@ -259,6 +277,7 @@ def create_app(data_dir: Path) -> FastAPI:
             count = await reindex_workspace(ws_id, embed_model)
         except OllamaError as e:
             raise HTTPException(status_code=502, detail=str(e))
+        workspaces.prune_orphan_embeddings(ws_id)
         return {"indexed": count}
 
     @app.post("/documents/draft")
@@ -317,6 +336,17 @@ def create_app(data_dir: Path) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(e))
         return {"results": workspaces.search(ws_id, qv, req.k)}
 
+    @app.post("/web/search")
+    async def web_search(req: WebSearch) -> dict:
+        """Standalone search — also doubles as an API-key check from Settings."""
+        try:
+            results = await web.tavily_search(
+                secrets_store.get_tavily_key(), req.query, req.max_results
+            )
+        except WebError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {"results": results}
+
     @app.get("/models")
     async def models() -> dict:
         try:
@@ -325,15 +355,27 @@ def create_app(data_dir: Path) -> FastAPI:
             raise HTTPException(status_code=502, detail=str(e))
         return {"models": installed}
 
+    def config_payload() -> dict:
+        cfg = settings.get_all()
+        # Never expose the secret itself — only whether one is set.
+        cfg["has_tavily_key"] = bool(secrets_store.get_tavily_key())
+        return cfg
+
     @app.get("/config")
     def get_config() -> dict:
-        return settings.get_all()
+        return config_payload()
 
     @app.put("/config")
     def put_config(update: ConfigUpdate) -> dict:
         # Only send keys the caller actually set, so we never clobber with null.
         updates = {k: v for k, v in update.model_dump().items() if v is not None}
-        return settings.set_many(updates)
+        settings.set_many(updates)
+        return config_payload()
+
+    @app.put("/secrets/tavily")
+    def put_tavily_key(req: TavilyKey) -> dict:
+        secrets_store.set_tavily_key(req.key)
+        return {"has_tavily_key": bool(secrets_store.get_tavily_key())}
 
     # ---- conversations (scoped to the active workspace) -------------------
 
@@ -402,6 +444,8 @@ def create_app(data_dir: Path) -> FastAPI:
         options = cfg.get("gen_params") or {}
         embed_model = cfg.get("embed_model")
         use_rag = req.use_rag and bool(embed_model)
+        tavily_key = secrets_store.get_tavily_key()
+        use_web = req.use_web and bool(tavily_key)
 
         # RAG retrieval + generation run inside the stream so the UI can show
         # each stage (searching the knowledge base → thinking → tokens).
@@ -429,6 +473,30 @@ def create_app(data_dir: Path) -> FastAPI:
                                     {"document_id": h["document_id"], "title": h["title"]}
                                 )
                         yield f"data: {json.dumps({'sources': sources})}\n\n"
+
+                if use_web:
+                    yield f"data: {json.dumps({'status': 'searching_web'})}\n\n"
+                    try:
+                        results = await web.tavily_search(tavily_key, last_user, 5)
+                    except WebError:
+                        results = []
+                    if results:
+                        messages.insert(
+                            len(messages) - 1,
+                            {"role": "system", "content": web.build_web_context(results)},
+                        )
+                        yield (
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "web_sources": [
+                                        {"title": r["title"], "url": r["url"]}
+                                        for r in results
+                                    ]
+                                }
+                            )
+                            + "\n\n"
+                        )
 
                 yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 async for token in ollama.chat_stream(model, messages, options):

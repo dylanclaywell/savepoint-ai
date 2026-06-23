@@ -25,6 +25,8 @@ DEFAULTS: dict[str, Any] = {
     "system_prompt": "",
     "gen_params": {},  # e.g. {"temperature": 0.7}
     "active_workspace": None,  # id of the active per-game workspace
+    # NOTE: secrets (e.g. the Tavily API key) live in the OS keychain via
+    # secrets_store.py, never here.
 }
 
 
@@ -63,6 +65,18 @@ class Settings:
 
     def get(self, key: str) -> Any:
         return self.get_all().get(key)
+
+    def take_raw(self, key: str) -> Any | None:
+        """Read a raw stored value and delete it. Used to migrate a secret that
+        an earlier version wrote into app.db out to the OS keychain."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT value FROM app_settings WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            con.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+            return json.loads(row[0])
 
     def set_many(self, updates: dict[str, Any]) -> dict[str, Any]:
         """Upsert the given keys (ignores unknown keys), return full settings."""

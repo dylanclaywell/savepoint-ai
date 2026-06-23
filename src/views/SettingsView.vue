@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
-import { kbReindex } from "../api/sidecar";
+import { kbReindex, webSearch, setTavilyKey } from "../api/sidecar";
 import SelectMenu from "../components/SelectMenu.vue";
 
 const store = useAppStore();
@@ -12,6 +12,12 @@ const systemPrompt = ref("");
 const savedNote = ref("");
 const rebuilding = ref(false);
 const kbNote = ref("");
+
+const tavilyKey = ref(""); // write-only buffer; the stored key never comes back
+const webNote = ref("");
+const webBusy = ref(false);
+
+const hasWebKey = computed(() => !!config.value?.has_tavily_key);
 
 const embedModels = computed(() =>
   models.value.filter((m) => m.capabilities?.includes("embedding")),
@@ -47,6 +53,27 @@ watch(
   },
   { immediate: true },
 );
+
+async function saveTavilyKey() {
+  if (port.value == null) return;
+  webBusy.value = true;
+  webNote.value = "";
+  try {
+    await setTavilyKey(port.value, tavilyKey.value.trim()); // → OS keychain
+    await store.refreshConfig(); // updates has_tavily_key
+    if (tavilyKey.value.trim()) {
+      await webSearch(port.value, "test"); // validates the stored key
+      webNote.value = "key saved & working";
+    } else {
+      webNote.value = "key cleared";
+    }
+    tavilyKey.value = ""; // don't keep the secret in the input
+  } catch (e) {
+    webNote.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    webBusy.value = false;
+  }
+}
 
 const chatModel = computed({
   get: () => config.value?.chat_model ?? "",
@@ -153,6 +180,46 @@ function fmtSize(bytes: number) {
             Save prompt
           </button>
           <span v-if="savedNote" class="font-ui text-[0.82rem] italic text-red">{{ savedNote }}</span>
+        </div>
+      </section>
+
+      <!-- web search (Tavily) -->
+      <section class="mt-10">
+        <div class="flex items-baseline gap-2">
+          <label class="text-[1.05rem] italic text-ink-soft">web search</label>
+          <span v-if="hasWebKey" class="font-ui text-[0.74rem] text-red">key saved</span>
+        </div>
+        <p class="mb-2 mt-1 text-[0.9rem] text-ink-soft">
+          Optional. Lets the partner ground replies in a Tavily web search — your
+          query leaves your machine when the “Web” toggle is on in chat. Bring your
+          own key from <span class="font-ui">tavily.com</span>. Stored in your OS
+          keychain, never on disk.
+        </p>
+        <div class="flex items-center gap-2">
+          <input
+            v-model="tavilyKey"
+            type="password"
+            :placeholder="hasWebKey ? 'enter a new key to replace…' : 'tvly-…'"
+            class="flex-1 rounded-[10px] border border-line-strong bg-surface px-3.5 py-2.5 font-ui text-[0.9rem] shadow-sm outline-none focus:border-red"
+            @keydown.enter="saveTavilyKey"
+          />
+          <button
+            :disabled="webBusy"
+            class="rounded-lg border border-line px-3 py-2.5 font-ui text-[0.8rem] text-ink-soft transition hover:border-line-strong hover:text-ink disabled:opacity-50"
+            @click="saveTavilyKey"
+          >
+            {{ webBusy ? "checking…" : "Save & test" }}
+          </button>
+        </div>
+        <div class="mt-2 flex items-center gap-3">
+          <button
+            v-if="hasWebKey"
+            class="font-ui text-[0.76rem] text-ink-soft hover:text-red"
+            @click="tavilyKey = '';saveTavilyKey()"
+          >
+            remove key
+          </button>
+          <span v-if="webNote" class="font-ui text-[0.8rem] italic text-ink-soft">{{ webNote }}</span>
         </div>
       </section>
     </div>

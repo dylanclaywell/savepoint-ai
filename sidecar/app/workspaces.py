@@ -240,6 +240,9 @@ class Workspaces:
 
     def delete_document(self, ws_id: int, doc_id: int) -> None:
         with self._connect(ws_id) as con:
+            # FK ON DELETE CASCADE clears `chunks` but NOT the vec0 embeddings
+            # table (no FK to a virtual table), so clear them explicitly first.
+            self._clear_doc_chunks(con, doc_id)
             con.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
 
     # ---- conversations ----------------------------------------------------
@@ -391,6 +394,18 @@ class Workspaces:
                 "DELETE FROM chunk_embeddings WHERE chunk_id = ?", [(i,) for i in ids]
             )
         con.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
+
+    def prune_orphan_embeddings(self, ws_id: int) -> int:
+        """Delete embedding rows whose chunk no longer exists (e.g. left behind
+        by a deleted document before the cascade fix). Returns rows removed."""
+        with self._connect(ws_id) as con:
+            if not self._vec_exists(con):
+                return 0
+            cur = con.execute(
+                "DELETE FROM chunk_embeddings WHERE chunk_id NOT IN "
+                "(SELECT id FROM chunks)"
+            )
+            return cur.rowcount
 
     def search(
         self, ws_id: int, query_embedding: list[float], k: int = 5

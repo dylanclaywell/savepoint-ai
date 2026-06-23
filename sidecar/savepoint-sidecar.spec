@@ -12,11 +12,18 @@ from PyInstaller.utils.hooks import (
     collect_data_files,
     collect_dynamic_libs,
     collect_submodules,
+    copy_metadata,
 )
 
 datas = collect_data_files("sqlite_vec")
 binaries = collect_dynamic_libs("sqlite_vec")
 hiddenimports = collect_submodules("uvicorn")
+
+# keyring discovers OS backends via entry points — bundle the backends AND their
+# package metadata, or the frozen app finds no keychain and secrets break.
+hiddenimports += collect_submodules("keyring")
+hiddenimports += collect_submodules("win32ctypes")
+datas += copy_metadata("keyring")
 
 a = Analysis(
     ["run.py"],
