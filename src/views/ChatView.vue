@@ -130,9 +130,9 @@ async function runStream(content: string, regenerate: boolean) {
   // trigger re-renders. Mutating the pre-push object bypasses Vue's proxy.
   const assistant = messages.value[messages.value.length - 1];
   streaming.value = true;
-  // Web is model-decided now, so don't presume a search; the server emits
-  // "searching_web" only if the model actually calls the tool.
-  status.value = useRag.value ? "searching" : "thinking";
+  // A router decides which sources to use, so don't presume; the server emits
+  // "searching" / "searching_web" only if it actually retrieves.
+  status.value = "thinking";
   controller = new AbortController();
   await scrollToBottom();
 
@@ -414,7 +414,7 @@ function onKeydown(e: KeyboardEvent) {
         "
         :title="
           hasEmbedModel
-            ? 'Ground replies in this game\'s knowledge base'
+            ? 'Let the partner consult this game\'s knowledge base when relevant'
             : 'Select an embedding model in Settings to use this'
         "
         @click="useRag = !useRag"

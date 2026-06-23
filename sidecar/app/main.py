@@ -153,6 +153,60 @@ def create_app(data_dir: Path) -> FastAPI:
         workspaces.ensure_vec_table(ws_id, len(embeddings[0]))
         workspaces.index_document(ws_id, doc["id"], chunks, embeddings)
 
+    async def route_sources(
+        model: str, last_user: str, kb_allowed: bool, web_allowed: bool
+    ) -> dict:
+        """Cheap classifier: decide which retrieval sources a turn needs. A
+        constrained JSON decision is far more reliable on small models than
+        agentic tool-calling. Biases toward the KB when unsure (cheap + local)."""
+        opts = [s for s, ok in (("kb", kb_allowed), ("web", web_allowed)) if ok]
+        system = (
+            "You are a router for a game-design assistant. Decide which "
+            "information sources are needed to answer the user's LATEST message. "
+            f"Available sources: {', '.join(opts)}.\n"
+            "- kb = the user's private notes for THIS game (its design decisions, "
+            "mechanics, lore, documents).\n"
+            "- web = a live internet search for external, current, or real-world "
+            "facts.\n"
+            "Set use_kb true ONLY when answering needs this game's specific "
+            "details or recalls past decisions. Set use_kb false for greetings, "
+            "thanks, small talk, or generic advice that doesn't reference this "
+            "game. Set use_web true ONLY for external/real-world facts. When the "
+            "message is purely conversational, set both false.\n"
+            "Examples:\n"
+            '- "what did we decide about the fertilizer machine?" -> '
+            '{"use_kb": true, "use_web": false, "kb_query": "fertilizer machine '
+            'design decisions", "web_query": ""}\n'
+            '- "thanks, that helps!" -> {"use_kb": false, "use_web": false, '
+            '"kb_query": "", "web_query": ""}\n'
+            '- "how does Stardew Valley handle fishing?" -> {"use_kb": false, '
+            '"use_web": true, "kb_query": "", "web_query": "Stardew Valley fishing '
+            'mechanic"}\n'
+            "Respond with ONLY the JSON object."
+        )
+        decision: dict = {}
+        try:
+            raw = await ollama.chat(
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": last_user},
+                ],
+                options={"temperature": 0},
+                format="json",
+            )
+            decision = json.loads(raw)
+        except (OllamaError, json.JSONDecodeError, TypeError):
+            decision = {}
+        use_kb = bool(decision.get("use_kb", False)) and kb_allowed
+        use_web = bool(decision.get("use_web", False)) and web_allowed
+        return {
+            "use_kb": use_kb,
+            "use_web": use_web,
+            "kb_query": (decision.get("kb_query") or last_user) if use_kb else "",
+            "web_query": (decision.get("web_query") or last_user) if use_web else "",
+        }
+
     async def reindex_workspace(ws_id: int, embed_model: str) -> int:
         """(Re)embed every in-KB document — used after the embed model changes."""
         count = 0
@@ -443,9 +497,13 @@ def create_app(data_dir: Path) -> FastAPI:
 
         options = cfg.get("gen_params") or {}
         embed_model = cfg.get("embed_model")
-        use_rag = req.use_rag and bool(embed_model)
         tavily_key = secrets_store.get_tavily_key()
-        chat_tools = tools.available_tools(req.use_web, bool(tavily_key))
+        kb_allowed = req.use_rag and bool(embed_model)
+        web_allowed = req.use_web and bool(tavily_key)
+        # Retrieval (KB/web) is router-driven; doc drafting stays a tool.
+        answer_tools = tools.available_tools(
+            allow_web=False, has_web_key=False, allow_write=True
+        )
         MAX_TOOL_ROUNDS = 3
 
         def sse(obj: dict) -> str:
@@ -453,49 +511,72 @@ def create_app(data_dir: Path) -> FastAPI:
 
         async def event_stream():
             try:
-                # Knowledge base stays injection-based (opt-in per chat).
-                if use_rag:
-                    yield sse({"status": "searching"})
-                    try:
-                        qv = (await ollama.embed(embed_model, [last_user]))[0]
-                        hits = workspaces.search(ws_id, qv, 5)
-                    except OllamaError:
-                        hits = []
-                    if hits:
-                        messages.insert(
-                            len(messages) - 1,
-                            {"role": "system", "content": rag.build_context(hits)},
-                        )
-                        seen: set[int] = set()
-                        srcs: list[dict] = []
-                        for h in hits:
-                            if h["document_id"] not in seen:
-                                seen.add(h["document_id"])
-                                srcs.append(
-                                    {"document_id": h["document_id"], "title": h["title"]}
-                                )
-                        yield sse({"sources": srcs})
+                web_sources: list[dict] = []
+                created_docs: list[dict] = []
+                reply: list[str] = []
 
-                # Generation streams token-by-token. If the model calls tools,
-                # we execute them and continue; the final answer streams for real
-                # (no chunked fake-stream), tools or not.
+                # --- Route: a small classifier decides which sources this turn
+                # needs, then we deterministically retrieve + inject them. ---
+                if kb_allowed or web_allowed:
+                    yield sse({"status": "thinking"})
+                    route = await route_sources(
+                        model, last_user, kb_allowed, web_allowed
+                    )
+                    if route["use_kb"]:
+                        yield sse({"status": "searching"})
+                        try:
+                            qv = (await ollama.embed(embed_model, [route["kb_query"]]))[0]
+                            hits = workspaces.search(ws_id, qv, 5)
+                        except OllamaError:
+                            hits = []
+                        if hits:
+                            messages.insert(
+                                len(messages) - 1,
+                                {"role": "system", "content": rag.build_context(hits)},
+                            )
+                            seen: set[int] = set()
+                            srcs: list[dict] = []
+                            for h in hits:
+                                if h["document_id"] not in seen:
+                                    seen.add(h["document_id"])
+                                    srcs.append(
+                                        {"document_id": h["document_id"],
+                                         "title": h["title"]}
+                                    )
+                            yield sse({"sources": srcs})
+                    if route["use_web"]:
+                        yield sse({"status": "searching_web"})
+                        try:
+                            results = await web.tavily_search(
+                                tavily_key, route["web_query"], 5
+                            )
+                        except WebError:
+                            results = []
+                        if results:
+                            messages.insert(
+                                len(messages) - 1,
+                                {"role": "system",
+                                 "content": web.build_web_context(results)},
+                            )
+                            web_sources = [
+                                {"title": r["title"], "url": r["url"]} for r in results
+                            ]
+                            yield sse({"web_sources": web_sources})
+
+                # --- Answer: stream token-by-token; the model may still call the
+                # create_document tool to draft a doc. ---
                 ctx = {
-                    "tavily_key": tavily_key,
                     "last_user": last_user,
                     "workspaces": workspaces,
                     "ws_id": ws_id,
                 }
-                web_sources: list[dict] = []
-                created_docs: list[dict] = []
-                reply: list[str] = []
-                tools_for_round = chat_tools
                 done = False
                 for _ in range(MAX_TOOL_ROUNDS):
                     yield sse({"status": "thinking"})
                     round_content: list[str] = []
                     calls: list[dict] = []
                     async for ev in ollama.chat_stream_events(
-                        model, messages, tools_for_round, options
+                        model, messages, answer_tools, options
                     ):
                         if ev["type"] == "token":
                             round_content.append(ev["content"])
@@ -513,16 +594,9 @@ def create_app(data_dir: Path) -> FastAPI:
                     for tc in calls:
                         fn = tc.get("function") or {}
                         name = fn.get("name", "")
-                        if name == "web_search":
-                            yield sse({"status": "searching_web"})
-                        elif name == "create_document":
+                        if name == "create_document":
                             yield sse({"status": "drafting"})
                         result = await tools.run_tool(name, fn.get("arguments", {}), ctx)
-                        for s in result.get("sources", []):
-                            if s not in web_sources:
-                                web_sources.append(s)
-                        if result.get("sources"):
-                            yield sse({"web_sources": web_sources})
                         if result.get("created_doc"):
                             created_docs.append(result["created_doc"])
                             yield sse({"created_docs": created_docs})
