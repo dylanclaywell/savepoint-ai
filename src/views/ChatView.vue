@@ -9,6 +9,7 @@ import {
   type ChatMessage,
   type Source,
   type WebSource,
+  type CreatedDoc,
 } from "../api/sidecar";
 import { renderMarkdown } from "../lib/markdown";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -22,9 +23,14 @@ import {
   PhStop,
   PhPencilSimple,
   PhGlobe,
+  PhFilePlus,
 } from "@phosphor-icons/vue";
 
-type Msg = ChatMessage & { sources?: Source[]; webSources?: WebSource[] };
+type Msg = ChatMessage & {
+  sources?: Source[];
+  webSources?: WebSource[];
+  createdDocs?: CreatedDoc[];
+};
 
 const props = defineProps<{ conversationId: number }>();
 
@@ -63,6 +69,7 @@ const lastIsAssistant = computed(
 function statusText(s: string) {
   if (s === "searching") return "searching the knowledge base…";
   if (s === "searching_web") return "searching the web…";
+  if (s === "drafting") return "writing a document…";
   if (s === "thinking") return "thinking…";
   return "now";
 }
@@ -148,6 +155,10 @@ async function runStream(content: string, regenerate: boolean) {
       },
       onWebSources: (sources) => {
         assistant.webSources = sources;
+      },
+      onCreatedDocs: (docs) => {
+        assistant.createdDocs = docs;
+        store.refreshDocuments(); // surface the new draft in the library
       },
     });
     // Server may have just named the conversation; reflect that.
@@ -331,6 +342,27 @@ function onKeydown(e: KeyboardEvent) {
               >
                 {{ s.title }}
               </button>
+            </div>
+
+            <div
+              v-if="m.createdDocs?.length"
+              class="mt-2.5 flex flex-col gap-1.5 font-ui text-[0.74rem]"
+            >
+              <div
+                v-for="d in m.createdDocs"
+                :key="d.id"
+                class="flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5"
+              >
+                <PhFilePlus :size="14" weight="light" class="shrink-0 text-red" />
+                <span class="text-ink-soft">drafted</span>
+                <button
+                  class="truncate font-medium hover:text-red"
+                  @click="store.openDocumentInLibrary(d.id)"
+                >
+                  {{ d.title }}
+                </button>
+                <span class="text-faint">— review to add to the knowledge base</span>
+              </div>
             </div>
 
             <!-- Regenerate the latest partner reply. -->

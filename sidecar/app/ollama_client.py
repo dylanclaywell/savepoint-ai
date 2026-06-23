@@ -101,6 +101,43 @@ class OllamaClient:
                 raise OllamaError(f"chat request failed: {e}") from e
         return resp.json().get("message", {})
 
+    async def chat_stream_events(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        options: dict | None = None,
+    ):
+        """Stream a chat that may also request tools. Yields dicts:
+        ``{"type": "token", "content": str}`` for content deltas and
+        ``{"type": "tool_calls", "calls": [...]}`` when the model requests tools."""
+        payload: dict = {"model": model, "messages": messages, "stream": True}
+        if tools:
+            payload["tools"] = tools
+        if options:
+            payload["options"] = options
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                async with client.stream(
+                    "POST", f"{self.host}/api/chat", json=payload
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        chunk = json.loads(line)
+                        if chunk.get("error"):
+                            raise OllamaError(chunk["error"])
+                        msg = chunk.get("message", {}) or {}
+                        if msg.get("tool_calls"):
+                            yield {"type": "tool_calls", "calls": msg["tool_calls"]}
+                        if msg.get("content"):
+                            yield {"type": "token", "content": msg["content"]}
+                        if chunk.get("done"):
+                            break
+            except httpx.HTTPError as e:
+                raise OllamaError(f"chat request failed: {e}") from e
+
     async def chat_stream(
         self,
         model: str,

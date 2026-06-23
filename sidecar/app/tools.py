@@ -34,10 +34,40 @@ WEB_SEARCH = {
 }
 
 
-def available_tools(allow_web: bool, has_web_key: bool) -> list[dict]:
+CREATE_DOCUMENT = {
+    "type": "function",
+    "function": {
+        "name": "create_document",
+        "description": (
+            "Save a design document into the user's library as a DRAFT for them "
+            "to review. Use when the user asks to capture, write up, save, or "
+            "document a decision or idea from the discussion. The draft is NOT "
+            "added to the knowledge base — the user reviews and approves it. "
+            "Provide a concise title and a well-structured markdown body."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "A concise document title."},
+                "body_markdown": {
+                    "type": "string",
+                    "description": "The document content, in markdown.",
+                },
+            },
+            "required": ["title", "body_markdown"],
+        },
+    },
+}
+
+
+def available_tools(
+    allow_web: bool, has_web_key: bool, allow_write: bool = True
+) -> list[dict]:
     tools: list[dict] = []
     if allow_web and has_web_key:
         tools.append(WEB_SEARCH)
+    if allow_write:
+        tools.append(CREATE_DOCUMENT)
     return tools
 
 
@@ -59,4 +89,23 @@ async def run_tool(name: str, args: Any, ctx: dict) -> dict:
             "text": web.build_web_context(results),
             "sources": [{"title": r["title"], "url": r["url"]} for r in results],
         }
-    return {"text": f"Unknown tool: {name}", "sources": []}
+    if name == "create_document":
+        ws = ctx.get("workspaces")
+        ws_id = ctx.get("ws_id")
+        if ws is None or ws_id is None:
+            return {"text": "Cannot create a document: no active workspace."}
+        doc = ws.create_document(
+            ws_id,
+            args.get("title") or "Untitled draft",
+            args.get("body_markdown") or "",
+            source="ai",
+            in_kb=False,  # review-gated — the user approves it into the KB
+        )
+        return {
+            "text": (
+                f"Created the draft document '{doc['title']}'. It is saved for the "
+                "user to review and is NOT yet in the knowledge base."
+            ),
+            "created_doc": {"id": doc["id"], "title": doc["title"]},
+        }
+    return {"text": f"Unknown tool: {name}"}

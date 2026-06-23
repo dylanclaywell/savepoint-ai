@@ -299,6 +299,11 @@ export interface WebSource {
   url: string;
 }
 
+export interface CreatedDoc {
+  id: number;
+  title: string;
+}
+
 /** Store (or clear, if empty) the Tavily key in the OS keychain. */
 export async function setTavilyKey(
   port: number,
@@ -346,6 +351,7 @@ export async function streamChat(
     onToken: (token: string) => void;
     onSources?: (sources: Source[]) => void;
     onWebSources?: (sources: WebSource[]) => void;
+    onCreatedDocs?: (docs: CreatedDoc[]) => void;
     onStatus?: (status: string) => void;
     useRag?: boolean;
     useWeb?: boolean;
@@ -394,6 +400,7 @@ export async function streamChat(
       if (parsed.status) handlers.onStatus?.(parsed.status);
       if (parsed.sources) handlers.onSources?.(parsed.sources);
       if (parsed.web_sources) handlers.onWebSources?.(parsed.web_sources);
+      if (parsed.created_docs) handlers.onCreatedDocs?.(parsed.created_docs);
       if (parsed.token) handlers.onToken(parsed.token);
     }
   }

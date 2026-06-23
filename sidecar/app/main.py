@@ -476,57 +476,70 @@ def create_app(data_dir: Path) -> FastAPI:
                                 )
                         yield sse({"sources": srcs})
 
-                # No tools available → stream the reply token-by-token.
-                if not chat_tools:
-                    yield sse({"status": "thinking"})
-                    reply: list[str] = []
-                    async for token in ollama.chat_stream(model, messages, options):
-                        reply.append(token)
-                        yield sse({"token": token})
-                    if reply:
-                        workspaces.add_message(
-                            ws_id, req.conversation_id, "assistant", "".join(reply)
-                        )
-                    yield "data: [DONE]\n\n"
-                    return
-
-                # Tools available → the model decides whether/when to call them.
-                ctx = {"tavily_key": tavily_key, "last_user": last_user}
+                # Generation streams token-by-token. If the model calls tools,
+                # we execute them and continue; the final answer streams for real
+                # (no chunked fake-stream), tools or not.
+                ctx = {
+                    "tavily_key": tavily_key,
+                    "last_user": last_user,
+                    "workspaces": workspaces,
+                    "ws_id": ws_id,
+                }
                 web_sources: list[dict] = []
-                final: str | None = None
+                created_docs: list[dict] = []
+                reply: list[str] = []
+                tools_for_round = chat_tools
+                done = False
                 for _ in range(MAX_TOOL_ROUNDS):
-                    msg = await ollama.chat_tools(model, messages, chat_tools, options)
-                    calls = msg.get("tool_calls") or []
+                    yield sse({"status": "thinking"})
+                    round_content: list[str] = []
+                    calls: list[dict] = []
+                    async for ev in ollama.chat_stream_events(
+                        model, messages, tools_for_round, options
+                    ):
+                        if ev["type"] == "token":
+                            round_content.append(ev["content"])
+                            reply.append(ev["content"])
+                            yield sse({"token": ev["content"]})
+                        elif ev["type"] == "tool_calls":
+                            calls = ev["calls"]
                     if not calls:
-                        final = msg.get("content") or ""
+                        done = True
                         break
                     messages.append(
-                        {"role": "assistant", "content": msg.get("content") or "",
+                        {"role": "assistant", "content": "".join(round_content),
                          "tool_calls": calls}
                     )
                     for tc in calls:
                         fn = tc.get("function") or {}
-                        if fn.get("name") == "web_search":
+                        name = fn.get("name", "")
+                        if name == "web_search":
                             yield sse({"status": "searching_web"})
-                        result = await tools.run_tool(
-                            fn.get("name", ""), fn.get("arguments", {}), ctx
-                        )
+                        elif name == "create_document":
+                            yield sse({"status": "drafting"})
+                        result = await tools.run_tool(name, fn.get("arguments", {}), ctx)
                         for s in result.get("sources", []):
                             if s not in web_sources:
                                 web_sources.append(s)
                         if result.get("sources"):
                             yield sse({"web_sources": web_sources})
+                        if result.get("created_doc"):
+                            created_docs.append(result["created_doc"])
+                            yield sse({"created_docs": created_docs})
                         messages.append({"role": "tool", "content": result["text"]})
-                if final is None:
-                    # Exhausted tool rounds — force a final answer without tools.
-                    msg = await ollama.chat_tools(model, messages, None, options)
-                    final = msg.get("content") or ""
 
-                # Stream the final answer (chunked for a streamed feel).
-                yield sse({"status": "thinking"})
-                for i in range(0, len(final), 24):
-                    yield sse({"token": final[i : i + 24]})
-                workspaces.add_message(ws_id, req.conversation_id, "assistant", final)
+                if not done:
+                    # Exhausted tool rounds — stream one final answer without tools.
+                    yield sse({"status": "thinking"})
+                    async for ev in ollama.chat_stream_events(model, messages, None, options):
+                        if ev["type"] == "token":
+                            reply.append(ev["content"])
+                            yield sse({"token": ev["content"]})
+
+                if reply:
+                    workspaces.add_message(
+                        ws_id, req.conversation_id, "assistant", "".join(reply)
+                    )
                 yield "data: [DONE]\n\n"
             except (OllamaError, WebError) as e:
                 yield sse({"error": str(e)})
