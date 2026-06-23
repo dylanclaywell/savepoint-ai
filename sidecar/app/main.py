@@ -47,9 +47,10 @@ def _vec_available() -> bool:
 
 class ChatRequest(BaseModel):
     conversation_id: int
-    content: str
+    content: str = ""
     model: str | None = None  # overrides the sticky configured model
     use_rag: bool = False  # ground the reply in the active game's knowledge base
+    regenerate: bool = False  # re-answer the last user turn (drop the prior reply)
 
 
 class KbSearch(BaseModel):
@@ -64,6 +65,10 @@ class DraftRequest(BaseModel):
 
 class ConversationCreate(BaseModel):
     title: str = ""
+
+
+class ConversationRename(BaseModel):
+    title: str
 
 
 class ConfigUpdate(BaseModel):
@@ -347,6 +352,13 @@ def create_app(data_dir: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such conversation")
         return conv
 
+    @app.put("/conversations/{conv_id}")
+    def rename_conversation(conv_id: int, req: ConversationRename) -> dict:
+        conv = workspaces.rename_conversation(active_ws_id(), conv_id, req.title)
+        if conv is None:
+            raise HTTPException(status_code=404, detail="no such conversation")
+        return conv
+
     @app.delete("/conversations/{conv_id}")
     def delete_conversation(conv_id: int) -> dict:
         workspaces.delete_conversation(active_ws_id(), conv_id)
@@ -367,10 +379,22 @@ def create_app(data_dir: Path) -> FastAPI:
         if conv is None:
             raise HTTPException(status_code=404, detail="no such conversation")
 
-        # Persist the user's turn, then assemble the full history for the model.
-        workspaces.add_message(ws_id, req.conversation_id, "user", req.content)
+        if req.regenerate:
+            # Re-answer the last user turn: drop the prior reply, keep history.
+            workspaces.delete_last_assistant(ws_id, req.conversation_id)
+        else:
+            if not req.content.strip():
+                raise HTTPException(status_code=400, detail="empty message")
+            workspaces.add_message(ws_id, req.conversation_id, "user", req.content)
+
         conv = workspaces.get_conversation(ws_id, req.conversation_id)
         messages = [{"role": m["role"], "content": m["content"]} for m in conv["messages"]]
+        last_user = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"), None
+        )
+        if last_user is None:
+            raise HTTPException(status_code=400, detail="nothing to respond to")
+
         system_prompt = cfg.get("system_prompt") or ""
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
@@ -387,7 +411,7 @@ def create_app(data_dir: Path) -> FastAPI:
                 if use_rag:
                     yield f"data: {json.dumps({'status': 'searching'})}\n\n"
                     try:
-                        qv = (await ollama.embed(embed_model, [req.content]))[0]
+                        qv = (await ollama.embed(embed_model, [last_user]))[0]
                         hits = workspaces.search(ws_id, qv, 5)
                     except OllamaError:
                         hits = []

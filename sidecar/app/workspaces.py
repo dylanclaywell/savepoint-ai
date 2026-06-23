@@ -308,6 +308,27 @@ class Workspaces:
                     )
         return {"role": role, "content": content, "created_at": ts}
 
+    def rename_conversation(
+        self, ws_id: int, conv_id: int, title: str
+    ) -> dict[str, Any] | None:
+        with self._connect(ws_id) as con:
+            con.execute(
+                "UPDATE conversations SET title = ? WHERE id = ?",
+                (title.strip() or "Untitled", conv_id),
+            )
+        return self.get_conversation(ws_id, conv_id)
+
+    def delete_last_assistant(self, ws_id: int, conv_id: int) -> None:
+        """Drop the trailing assistant turn (used when regenerating a reply)."""
+        with self._connect(ws_id) as con:
+            row = con.execute(
+                "SELECT id, role FROM messages WHERE conversation_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (conv_id,),
+            ).fetchone()
+            if row and row["role"] == "assistant":
+                con.execute("DELETE FROM messages WHERE id = ?", (row["id"],))
+
     def delete_conversation(self, ws_id: int, conv_id: int) -> None:
         with self._connect(ws_id) as con:
             con.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))

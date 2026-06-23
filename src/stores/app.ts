@@ -13,6 +13,7 @@ import {
   listDocuments,
   listConversations,
   createConversation as apiCreateConversation,
+  renameConversation as apiRenameConversation,
   deleteConversation as apiDeleteConversation,
   type Config,
   type OllamaModel,
@@ -162,6 +163,12 @@ export const useAppStore = defineStore("app", () => {
     currentConversationId.value = null;
   }
 
+  async function renameConversation(id: number, title: string) {
+    if (port.value == null) return;
+    await apiRenameConversation(port.value, id, title);
+    await refreshConversations();
+  }
+
   async function deleteConversation(id: number) {
     if (port.value == null) return;
     await apiDeleteConversation(port.value, id);
@@ -196,6 +203,7 @@ export const useAppStore = defineStore("app", () => {
     newConversation,
     openConversation,
     closeConversation,
+    renameConversation,
     deleteConversation,
   };
 });

@@ -268,6 +268,19 @@ export async function getConversation(
   );
 }
 
+export async function renameConversation(
+  port: number,
+  id: number,
+  title: string,
+): Promise<ConversationDetail> {
+  const res = await fetch(url(port, `/conversations/${id}`), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  return jsonOrThrow(res, "could not rename conversation");
+}
+
 export async function deleteConversation(port: number, id: number): Promise<void> {
   const res = await fetch(url(port, `/conversations/${id}`), { method: "DELETE" });
   await jsonOrThrow(res, "could not delete conversation");
@@ -302,6 +315,7 @@ export async function streamChat(
     onSources?: (sources: Source[]) => void;
     onStatus?: (status: string) => void;
     useRag?: boolean;
+    regenerate?: boolean;
     model?: string;
     signal?: AbortSignal;
   },
@@ -314,6 +328,7 @@ export async function streamChat(
       content,
       model: handlers.model,
       use_rag: handlers.useRag ?? false,
+      regenerate: handlers.regenerate ?? false,
     }),
     signal: handlers.signal,
   });
