@@ -174,8 +174,16 @@ messages(id, conversation_id, role, content, created_at)
 > `source=ai` + `in_kb=false` (review-gated, not auto-grounded). "draft doc" in
 > the conversation header → jumps to the new draft in Documents with a review
 > banner; user edits then opts into the KB. New *manual* docs still default into
-> the KB. Next: **sidecar packaging** (PyInstaller `externalBin`) for real
-> releases.
+> the KB.
+> **Packaging ✅** — sidecar frozen with PyInstaller (`savepoint-sidecar.spec`,
+> one-file; force-collects sqlite-vec's native extension — verified `vec:true` +
+> KB search in the frozen binary). Shipped as a Tauri `externalBin`
+> (`scripts/build-sidecar.mjs` builds + places it; `beforeBuildCommand` runs it).
+> Release spawn path runs the bundled binary next to the app exe; dev still uses
+> `uv run`. Releases need no Python/uv.
+> **Chat status feedback ✅** — RAG retrieval + generation run inside the SSE
+> stream, emitting `status` events (searching → thinking) before token streaming,
+> shown live in the conversation.
 
 ### M0 — Scaffolding & plumbing
 - Init Tauri + Vue 3 + TS + Vite project.

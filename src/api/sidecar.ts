@@ -300,6 +300,7 @@ export async function streamChat(
   handlers: {
     onToken: (token: string) => void;
     onSources?: (sources: Source[]) => void;
+    onStatus?: (status: string) => void;
     useRag?: boolean;
     model?: string;
     signal?: AbortSignal;
@@ -340,6 +341,7 @@ export async function streamChat(
       if (data === "[DONE]") return;
       const parsed = JSON.parse(data);
       if (parsed.error) throw new Error(parsed.error);
+      if (parsed.status) handlers.onStatus?.(parsed.status);
       if (parsed.sources) handlers.onSources?.(parsed.sources);
       if (parsed.token) handlers.onToken(parsed.token);
     }

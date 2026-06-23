@@ -29,8 +29,15 @@ const title = ref("");
 const messages = ref<Msg[]>([]);
 const draft = ref("");
 const streaming = ref(false);
+const status = ref("");
 const errorMsg = ref("");
 const scroller = ref<HTMLElement | null>(null);
+
+function statusText(s: string) {
+  if (s === "searching") return "searching the knowledge base…";
+  if (s === "thinking") return "thinking…";
+  return "now";
+}
 
 const useRag = ref(localStorage.getItem("savepoint-rag") === "1");
 watch(useRag, (v) => localStorage.setItem("savepoint-rag", v ? "1" : "0"));
@@ -86,12 +93,17 @@ async function send() {
   const assistant: Msg = { role: "assistant", content: "" };
   messages.value.push(assistant);
   streaming.value = true;
+  status.value = useRag.value ? "searching" : "thinking";
   await scrollToBottom();
 
   try {
     await streamChat(port.value, props.conversationId, text, {
       useRag: useRag.value,
+      onStatus: (s) => {
+        status.value = s;
+      },
       onToken: (token) => {
+        status.value = "";
         assistant.content += token;
         scrollToBottom();
       },
@@ -108,6 +120,7 @@ async function send() {
     if (!assistant.content) messages.value.pop();
   } finally {
     streaming.value = false;
+    status.value = "";
   }
 }
 
@@ -171,7 +184,7 @@ function onKeydown(e: KeyboardEvent) {
               v-if="streaming && i === messages.length - 1"
               class="mt-1 block text-[0.7rem] not-italic tracking-wide text-faint"
             >
-              now
+              {{ status ? statusText(status) : "now" }}
             </span>
           </div>
           <!-- Second column: the body (+ KB citations for partner turns). -->

@@ -24,11 +24,9 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   # Build the Windows desktop bundle and attach it to the freshly-cut release.
-  #
-  # NOTE: until the sidecar is packaged as a PyInstaller `externalBin` (see
-  # PLAN.md → Packaging), the bundled app launches but its AI features won't
-  # work — the release spawn path expects a `savepoint-sidecar` binary that
-  # isn't shipped yet. Wire that up before cutting a user-facing release.
+  # tauri-action runs the beforeBuildCommand, which builds the frontend and the
+  # PyInstaller sidecar (shipped as an externalBin) — so the installer is
+  # self-contained (no Python/uv needed by the end user).
   build:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}

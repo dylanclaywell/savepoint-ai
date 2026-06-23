@@ -375,36 +375,38 @@ def create_app(data_dir: Path) -> FastAPI:
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
 
-        # RAG: retrieve from the active game's KB and ground the reply in it.
-        sources: list[dict] = []
-        embed_model = cfg.get("embed_model")
-        if req.use_rag and embed_model:
-            try:
-                qv = (await ollama.embed(embed_model, [req.content]))[0]
-                hits = workspaces.search(ws_id, qv, 5)
-            except OllamaError:
-                hits = []
-            if hits:
-                # Inject context just before the latest user turn.
-                messages.insert(
-                    len(messages) - 1,
-                    {"role": "system", "content": rag.build_context(hits)},
-                )
-                seen: set[int] = set()
-                for h in hits:
-                    if h["document_id"] not in seen:
-                        seen.add(h["document_id"])
-                        sources.append(
-                            {"document_id": h["document_id"], "title": h["title"]}
-                        )
-
         options = cfg.get("gen_params") or {}
+        embed_model = cfg.get("embed_model")
+        use_rag = req.use_rag and bool(embed_model)
 
+        # RAG retrieval + generation run inside the stream so the UI can show
+        # each stage (searching the knowledge base → thinking → tokens).
         async def event_stream():
             reply = []
             try:
-                if sources:
-                    yield f"data: {json.dumps({'sources': sources})}\n\n"
+                if use_rag:
+                    yield f"data: {json.dumps({'status': 'searching'})}\n\n"
+                    try:
+                        qv = (await ollama.embed(embed_model, [req.content]))[0]
+                        hits = workspaces.search(ws_id, qv, 5)
+                    except OllamaError:
+                        hits = []
+                    if hits:
+                        messages.insert(
+                            len(messages) - 1,
+                            {"role": "system", "content": rag.build_context(hits)},
+                        )
+                        seen: set[int] = set()
+                        sources: list[dict] = []
+                        for h in hits:
+                            if h["document_id"] not in seen:
+                                seen.add(h["document_id"])
+                                sources.append(
+                                    {"document_id": h["document_id"], "title": h["title"]}
+                                )
+                        yield f"data: {json.dumps({'sources': sources})}\n\n"
+
+                yield f"data: {json.dumps({'status': 'thinking'})}\n\n"
                 async for token in ollama.chat_stream(model, messages, options):
                     reply.append(token)
                     yield f"data: {json.dumps({'token': token})}\n\n"
