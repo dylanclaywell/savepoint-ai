@@ -154,11 +154,19 @@ def create_app(data_dir: Path) -> FastAPI:
         workspaces.index_document(ws_id, doc["id"], chunks, embeddings)
 
     async def route_sources(
-        model: str, last_user: str, kb_allowed: bool, web_allowed: bool
+        model: str, history: list[dict], kb_allowed: bool, web_allowed: bool
     ) -> dict:
         """Cheap classifier: decide which retrieval sources a turn needs. A
         constrained JSON decision is far more reliable on small models than
-        agentic tool-calling. Biases toward the KB when unsure (cheap + local)."""
+        agentic tool-calling. Sees recent conversation so it can resolve
+        references ("look those up") into self-contained search queries."""
+        recent = [m for m in history if m.get("role") in ("user", "assistant")][-6:]
+        last_user = next(
+            (m["content"] for m in reversed(recent) if m["role"] == "user"), ""
+        )
+        transcript = "\n".join(
+            f"{m['role']}: {m['content'][:400]}" for m in recent
+        )
         opts = [s for s, ok in (("kb", kb_allowed), ("web", web_allowed)) if ok]
         system = (
             "You are a router for a game-design assistant. Decide which "
@@ -170,18 +178,21 @@ def create_app(data_dir: Path) -> FastAPI:
             "facts.\n"
             "Set use_kb true ONLY when answering needs this game's specific "
             "details or recalls past decisions. Set use_kb false for greetings, "
-            "thanks, small talk, or generic advice that doesn't reference this "
-            "game. Set use_web true ONLY for external/real-world facts. When the "
-            "message is purely conversational, set both false.\n"
+            "thanks, or small talk. Set use_web true ONLY for external/real-world "
+            "facts. When the latest message is purely conversational, set both "
+            "false.\n"
+            "IMPORTANT: kb_query and web_query MUST be self-contained search "
+            "strings. Resolve references like 'it', 'those', 'examples' using the "
+            "conversation — never output a vague query like 'examples'.\n"
             "Examples:\n"
-            '- "what did we decide about the fertilizer machine?" -> '
+            '- latest "what did we decide about the fertilizer machine?" -> '
             '{"use_kb": true, "use_web": false, "kb_query": "fertilizer machine '
             'design decisions", "web_query": ""}\n'
-            '- "thanks, that helps!" -> {"use_kb": false, "use_web": false, '
-            '"kb_query": "", "web_query": ""}\n'
-            '- "how does Stardew Valley handle fishing?" -> {"use_kb": false, '
-            '"use_web": true, "kb_query": "", "web_query": "Stardew Valley fishing '
-            'mechanic"}\n'
+            '- conversation about animal defense mechanisms, latest "look up '
+            'examples online" -> {"use_kb": false, "use_web": true, "kb_query": '
+            '"", "web_query": "real animal defense mechanism examples"}\n'
+            '- latest "thanks, that helps!" -> {"use_kb": false, "use_web": '
+            'false, "kb_query": "", "web_query": ""}\n'
             "Respond with ONLY the JSON object."
         )
         decision: dict = {}
@@ -190,7 +201,14 @@ def create_app(data_dir: Path) -> FastAPI:
                 model,
                 [
                     {"role": "system", "content": system},
-                    {"role": "user", "content": last_user},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Conversation so far:\n{transcript}\n\n"
+                            "Decide the sources for the latest user message and "
+                            "write self-contained queries."
+                        ),
+                    },
                 ],
                 options={"temperature": 0},
                 format="json",
@@ -520,7 +538,7 @@ def create_app(data_dir: Path) -> FastAPI:
                 if kb_allowed or web_allowed:
                     yield sse({"status": "thinking"})
                     route = await route_sources(
-                        model, last_user, kb_allowed, web_allowed
+                        model, messages, kb_allowed, web_allowed
                     )
                     if route["use_kb"]:
                         yield sse({"status": "searching"})
