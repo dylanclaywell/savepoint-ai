@@ -1,6 +1,6 @@
 [package]
 name = "savepoint-ai"
-version = "0.1.0" # x-release-please-version
+version = "0.2.0" # x-release-please-version
 description = "AI-assisted game design — Socratic partner for shaping your game"
 authors = ["you"]
 edition = "2021"
