@@ -259,17 +259,37 @@ export async function deleteConversation(port: number, id: number): Promise<void
   await jsonOrThrow(res, "could not delete conversation");
 }
 
+// ---- knowledge base (RAG) -------------------------------------------------
+
+export interface Source {
+  document_id: number;
+  title: string;
+}
+
+export async function kbReindex(port: number): Promise<number> {
+  const data = await jsonOrThrow<{ indexed: number }>(
+    await fetch(url(port, "/kb/reindex"), { method: "POST" }),
+    "could not rebuild the knowledge base",
+  );
+  return data.indexed;
+}
+
 /**
  * Stream a chat reply for a conversation. The sidecar persists both the user
- * turn and the assistant reply. Calls `onToken` for each fragment; resolves
- * when the stream ends; rejects on transport/model error.
+ * turn and the assistant reply. `onToken` fires per fragment; `onSources` fires
+ * once with KB citations when RAG is on. Resolves when the stream ends.
  */
 export async function streamChat(
   port: number,
   conversationId: number,
   content: string,
-  onToken: (token: string) => void,
-  opts: { model?: string; signal?: AbortSignal } = {},
+  handlers: {
+    onToken: (token: string) => void;
+    onSources?: (sources: Source[]) => void;
+    useRag?: boolean;
+    model?: string;
+    signal?: AbortSignal;
+  },
 ): Promise<void> {
   const res = await fetch(url(port, "/chat"), {
     method: "POST",
@@ -277,9 +297,10 @@ export async function streamChat(
     body: JSON.stringify({
       conversation_id: conversationId,
       content,
-      model: opts.model,
+      model: handlers.model,
+      use_rag: handlers.useRag ?? false,
     }),
-    signal: opts.signal,
+    signal: handlers.signal,
   });
   if (!res.ok || !res.body) {
     const detail = await res.text().catch(() => "");
@@ -305,7 +326,8 @@ export async function streamChat(
       if (data === "[DONE]") return;
       const parsed = JSON.parse(data);
       if (parsed.error) throw new Error(parsed.error);
-      if (parsed.token) onToken(parsed.token);
+      if (parsed.sources) handlers.onSources?.(parsed.sources);
+      if (parsed.token) handlers.onToken(parsed.token);
     }
   }
 }

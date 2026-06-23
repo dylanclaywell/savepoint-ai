@@ -2,9 +2,11 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
-import { getConversation, streamChat, type ChatMessage } from "../api/sidecar";
+import { getConversation, streamChat, type ChatMessage, type Source } from "../api/sidecar";
 import { renderMarkdown } from "../lib/markdown";
-import { PhArrowLeft, PhCaretRight, PhPaperPlaneRight } from "@phosphor-icons/vue";
+import { PhArrowLeft, PhCaretRight, PhPaperPlaneRight, PhBooks } from "@phosphor-icons/vue";
+
+type Msg = ChatMessage & { sources?: Source[] };
 
 const props = defineProps<{ conversationId: number }>();
 
@@ -12,13 +14,17 @@ const store = useAppStore();
 const { config, port, conversations } = storeToRefs(store);
 
 const title = ref("");
-const messages = ref<ChatMessage[]>([]);
+const messages = ref<Msg[]>([]);
 const draft = ref("");
 const streaming = ref(false);
 const errorMsg = ref("");
 const scroller = ref<HTMLElement | null>(null);
 
+const useRag = ref(localStorage.getItem("savepoint-rag") === "1");
+watch(useRag, (v) => localStorage.setItem("savepoint-rag", v ? "1" : "0"));
+
 const canChat = computed(() => !!config.value?.chat_model && port.value != null);
+const hasEmbedModel = computed(() => !!config.value?.embed_model);
 
 function labelFor(role: string) {
   return role === "assistant" ? "partner" : "you";
@@ -46,15 +52,21 @@ async function send() {
   errorMsg.value = "";
   messages.value.push({ role: "user", content: text });
   draft.value = "";
-  const assistant: ChatMessage = { role: "assistant", content: "" };
+  const assistant: Msg = { role: "assistant", content: "" };
   messages.value.push(assistant);
   streaming.value = true;
   await scrollToBottom();
 
   try {
-    await streamChat(port.value, props.conversationId, text, (token) => {
-      assistant.content += token;
-      scrollToBottom();
+    await streamChat(port.value, props.conversationId, text, {
+      useRag: useRag.value,
+      onToken: (token) => {
+        assistant.content += token;
+        scrollToBottom();
+      },
+      onSources: (sources) => {
+        assistant.sources = sources;
+      },
     });
     // Server may have just named the conversation; reflect that.
     await store.refreshConversations();
@@ -121,19 +133,33 @@ function onKeydown(e: KeyboardEvent) {
               now
             </span>
           </div>
-          <!-- Partner replies render as markdown; your own turns stay verbatim. -->
-          <div
-            v-if="m.role === 'assistant'"
-            class="prose"
-          >
-            <span v-if="streaming && i === messages.length - 1 && !m.content">▍</span>
-            <div v-else v-html="renderMarkdown(m.content)" />
-          </div>
-          <div
-            v-else
-            class="hyphens-auto whitespace-pre-wrap text-justify text-[1.12rem] leading-[1.74]"
-          >
-            {{ m.content }}
+          <!-- Second column: the body (+ KB citations for partner turns). -->
+          <div>
+            <!-- Partner replies render as markdown; your own turns stay verbatim. -->
+            <div v-if="m.role === 'assistant'" class="prose">
+              <span v-if="streaming && i === messages.length - 1 && !m.content">▍</span>
+              <div v-else v-html="renderMarkdown(m.content)" />
+            </div>
+            <div
+              v-else
+              class="hyphens-auto whitespace-pre-wrap text-justify text-[1.12rem] leading-[1.74]"
+            >
+              {{ m.content }}
+            </div>
+
+            <div
+              v-if="m.sources?.length"
+              class="mt-2.5 flex flex-wrap items-center gap-2 font-ui text-[0.72rem] text-faint"
+            >
+              <span class="italic">grounded in</span>
+              <span
+                v-for="s in m.sources"
+                :key="s.document_id"
+                class="rounded border border-line px-1.5 py-0.5"
+              >
+                {{ s.title }}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -142,6 +168,26 @@ function onKeydown(e: KeyboardEvent) {
     <p v-if="errorMsg" class="mx-auto w-full max-w-[740px] px-14 pt-2 text-[0.9rem] text-red">
       {{ errorMsg }}
     </p>
+
+    <div class="mx-auto flex w-full max-w-[740px] justify-end px-14 pt-2">
+      <button
+        type="button"
+        class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-ui text-[0.74rem] transition"
+        :class="
+          useRag
+            ? 'border-red bg-red-soft text-red'
+            : 'border-line text-ink-soft hover:text-ink'
+        "
+        :title="
+          hasEmbedModel
+            ? 'Ground replies in this game\'s knowledge base'
+            : 'Select an embedding model in Settings to use this'
+        "
+        @click="useRag = !useRag"
+      >
+        <PhBooks :size="14" :weight="useRag ? 'bold' : 'light'" /> Knowledge base
+      </button>
+    </div>
 
     <form
       class="mx-auto mt-1.5 flex w-full max-w-[740px] items-stretch gap-3 border-t border-rule px-14 pt-[18px]"

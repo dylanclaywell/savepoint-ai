@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+import sqlite_vec
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -146,6 +148,14 @@ class Workspaces:
         "role TEXT NOT NULL, "
         "content TEXT NOT NULL, "
         "created_at TEXT NOT NULL)",
+        # KB chunks. The vec0 embedding table is created lazily (its dimension
+        # depends on the chosen embedding model) — see ensure_vec_table.
+        "CREATE TABLE IF NOT EXISTS chunks ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE, "
+        "ordinal INTEGER NOT NULL, "
+        "text TEXT NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS kb_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     )
 
     @contextmanager
@@ -156,6 +166,9 @@ class Workspaces:
         con = sqlite3.connect(self._db_path(ws["slug"]))
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
+        con.enable_load_extension(True)
+        sqlite_vec.load(con)
+        con.enable_load_extension(False)
         for stmt in self._SCHEMA:
             con.execute(stmt)
         try:
@@ -163,6 +176,13 @@ class Workspaces:
             con.commit()
         finally:
             con.close()
+
+    @staticmethod
+    def _vec_exists(con: sqlite3.Connection) -> bool:
+        row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'chunk_embeddings'"
+        ).fetchone()
+        return row is not None
 
     # ---- documents --------------------------------------------------------
 
@@ -184,14 +204,20 @@ class Workspaces:
         return self._doc(row) if row else None
 
     def create_document(
-        self, ws_id: int, title: str, body: str = "", source: str = "manual"
+        self,
+        ws_id: int,
+        title: str,
+        body: str = "",
+        source: str = "manual",
+        in_kb: bool = True,
     ) -> dict[str, Any]:
         ts = _now()
         with self._connect(ws_id) as con:
             cur = con.execute(
-                "INSERT INTO documents (title, body_markdown, source, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (title.strip() or "Untitled", body, source, ts, ts),
+                "INSERT INTO documents "
+                "(title, body_markdown, source, in_kb, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (title.strip() or "Untitled", body, source, int(in_kb), ts, ts),
             )
             doc_id = cur.lastrowid
         return self.get_document(ws_id, doc_id)  # type: ignore[return-value]
@@ -285,6 +311,84 @@ class Workspaces:
     def delete_conversation(self, ws_id: int, conv_id: int) -> None:
         with self._connect(ws_id) as con:
             con.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
+
+    # ---- knowledge base (chunks + vec0 embeddings) ------------------------
+
+    def ensure_vec_table(self, ws_id: int, dim: int) -> bool:
+        """Ensure the vec0 table matches `dim`. Returns True if it had to (re)build
+        — in which case existing chunks were cleared and callers must re-embed."""
+        with self._connect(ws_id) as con:
+            stored = con.execute(
+                "SELECT value FROM kb_meta WHERE key = 'embed_dim'"
+            ).fetchone()
+            stored_dim = int(stored["value"]) if stored else None
+            if self._vec_exists(con) and stored_dim == dim:
+                return False
+            if self._vec_exists(con):
+                con.execute("DROP TABLE chunk_embeddings")
+                con.execute("DELETE FROM chunks")
+            con.execute(
+                f"CREATE VIRTUAL TABLE chunk_embeddings USING vec0("
+                f"chunk_id INTEGER PRIMARY KEY, embedding FLOAT[{dim}])"
+            )
+            con.execute(
+                "INSERT INTO kb_meta (key, value) VALUES ('embed_dim', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(dim),),
+            )
+            return True
+
+    def index_document(
+        self, ws_id: int, doc_id: int, chunks: list[str], embeddings: list[list[float]]
+    ) -> None:
+        with self._connect(ws_id) as con:
+            self._clear_doc_chunks(con, doc_id)
+            for ordinal, (text, emb) in enumerate(zip(chunks, embeddings)):
+                cur = con.execute(
+                    "INSERT INTO chunks (document_id, ordinal, text) VALUES (?, ?, ?)",
+                    (doc_id, ordinal, text),
+                )
+                con.execute(
+                    "INSERT INTO chunk_embeddings (chunk_id, embedding) VALUES (?, ?)",
+                    (cur.lastrowid, sqlite_vec.serialize_float32(emb)),
+                )
+
+    def unindex_document(self, ws_id: int, doc_id: int) -> None:
+        with self._connect(ws_id) as con:
+            self._clear_doc_chunks(con, doc_id)
+
+    @staticmethod
+    def _clear_doc_chunks(con: sqlite3.Connection, doc_id: int) -> None:
+        ids = [
+            r["id"]
+            for r in con.execute(
+                "SELECT id FROM chunks WHERE document_id = ?", (doc_id,)
+            ).fetchall()
+        ]
+        if ids and Workspaces._vec_exists(con):
+            con.executemany(
+                "DELETE FROM chunk_embeddings WHERE chunk_id = ?", [(i,) for i in ids]
+            )
+        con.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
+
+    def search(
+        self, ws_id: int, query_embedding: list[float], k: int = 5
+    ) -> list[dict[str, Any]]:
+        with self._connect(ws_id) as con:
+            if not self._vec_exists(con):
+                return []
+            rows = con.execute(
+                "WITH knn AS ("
+                "  SELECT chunk_id, distance FROM chunk_embeddings "
+                "  WHERE embedding MATCH ? ORDER BY distance LIMIT ?"
+                ") "
+                "SELECT c.document_id, d.title, c.text, knn.distance "
+                "FROM knn JOIN chunks c ON c.id = knn.chunk_id "
+                "JOIN documents d ON d.id = c.document_id "
+                "ORDER BY knn.distance",
+                (sqlite_vec.serialize_float32(query_embedding), k),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     @staticmethod
     def _doc(row: sqlite3.Row) -> dict[str, Any]:

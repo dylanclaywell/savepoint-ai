@@ -161,7 +161,15 @@ messages(id, conversation_id, role, content, created_at)
 > now persists (user + assistant), auto-titles from the first message; list /
 > open / delete. UI: custom `ConfirmDialog` (replaces `window.confirm`) and
 > `SelectMenu` (replaces native `<select>`); game selector moved to sidebar top.
-> Next: **M3** (embeddings + RAG).
+> Polish: markdown rendering in chat, draggable/persisted sidebar, Phosphor
+> icons, game rename, README + CI/release workflows.
+> **M3 ✅** — embeddings + RAG: embedding-model selection, lazy `vec0` table
+> keyed to the model's dimension, chunk+embed on KB add (auto re-embed on edit,
+> unindex on removal), `/kb/search` + `/kb/reindex`, and a chat "Knowledge base"
+> toggle that grounds replies in the active game's docs and cites sources.
+> Embeddings use Ollama's legacy `/api/embeddings` (the batch `/api/embed` 404s
+> on some builds). Next: **M4** (AI-drafted design docs), or sidecar packaging
+> for real releases.
 
 ### M0 — Scaffolding & plumbing
 - Init Tauri + Vue 3 + TS + Vite project.

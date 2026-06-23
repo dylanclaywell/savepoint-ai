@@ -2,13 +2,43 @@
 import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { useAppStore } from "../stores/app";
+import { kbReindex } from "../api/sidecar";
 import SelectMenu from "../components/SelectMenu.vue";
 
 const store = useAppStore();
-const { models, config } = storeToRefs(store);
+const { models, config, port } = storeToRefs(store);
 
 const systemPrompt = ref("");
 const savedNote = ref("");
+const rebuilding = ref(false);
+const kbNote = ref("");
+
+const embedModels = computed(() =>
+  models.value.filter((m) => m.capabilities?.includes("embedding")),
+);
+
+const embedModel = computed({
+  get: () => config.value?.embed_model ?? "",
+  set: async (v: string) => {
+    await store.update({ embed_model: v });
+    // A new embedding model means new vectors — re-embed the KB.
+    await rebuildKb();
+  },
+});
+
+async function rebuildKb() {
+  if (port.value == null) return;
+  rebuilding.value = true;
+  kbNote.value = "";
+  try {
+    const n = await kbReindex(port.value);
+    kbNote.value = `indexed ${n} document${n === 1 ? "" : "s"}`;
+  } catch (e) {
+    kbNote.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    rebuilding.value = false;
+  }
+}
 
 watch(
   config,
@@ -69,6 +99,37 @@ function fmtSize(bytes: number) {
           placeholder="Choose a model"
           @update:model-value="(v) => (chatModel = v)"
         />
+      </section>
+
+      <!-- embedding model + knowledge base -->
+      <section class="mb-10">
+        <label class="text-[1.05rem] italic text-ink-soft">embedding model</label>
+        <p class="mb-2 mt-1 text-[0.9rem] text-ink-soft">
+          Indexes your documents and powers knowledge-base search in chat.
+        </p>
+        <p v-if="!embedModels.length" class="text-[0.9rem] text-ink-soft">
+          No embedding model installed. Pull one —
+          <code class="rounded bg-surface px-1.5 py-0.5 font-ui text-[0.82rem]">ollama pull nomic-embed-text</code>
+          — then rescan above.
+        </p>
+        <SelectMenu
+          v-else
+          :model-value="embedModel"
+          :options="embedModels.map((m) => ({ value: m.name, label: m.name }))"
+          aria-label="Embedding model"
+          placeholder="Choose an embedding model"
+          @update:model-value="(v) => (embedModel = v)"
+        />
+        <div v-if="embedModels.length" class="mt-3 flex items-center gap-3">
+          <button
+            :disabled="rebuilding"
+            class="rounded-lg border border-line px-3 py-1.5 font-ui text-[0.8rem] text-ink-soft transition hover:border-line-strong hover:text-ink disabled:opacity-50"
+            @click="rebuildKb"
+          >
+            {{ rebuilding ? "rebuilding…" : "Rebuild knowledge base" }}
+          </button>
+          <span v-if="kbNote" class="font-ui text-[0.8rem] italic text-ink-soft">{{ kbNote }}</span>
+        </div>
       </section>
 
       <!-- system prompt -->

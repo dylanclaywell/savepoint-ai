@@ -34,6 +34,30 @@ class OllamaClient:
                 raise OllamaError(f"cannot reach Ollama at {self.host}: {e}") from e
         return resp.json().get("models", [])
 
+    async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
+        """Return an embedding vector for each input string.
+
+        Uses the legacy ``/api/embeddings`` endpoint (one text per request) for
+        broad Ollama version compatibility; the newer batch ``/api/embed`` isn't
+        present on all builds.
+        """
+        out: list[list[float]] = []
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for text in inputs:
+                try:
+                    resp = await client.post(
+                        f"{self.host}/api/embeddings",
+                        json={"model": model, "prompt": text},
+                    )
+                    resp.raise_for_status()
+                except httpx.HTTPError as e:
+                    raise OllamaError(f"embedding request failed: {e}") from e
+                emb = resp.json().get("embedding")
+                if not emb:
+                    raise OllamaError("Ollama returned no embedding")
+                out.append(emb)
+        return out
+
     async def chat_stream(
         self,
         model: str,

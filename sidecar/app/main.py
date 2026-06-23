@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import __version__
+from . import __version__, rag
 from .config import Settings
 from .ollama_client import OllamaClient, OllamaError
 from .workspaces import Workspaces
@@ -49,6 +49,12 @@ class ChatRequest(BaseModel):
     conversation_id: int
     content: str
     model: str | None = None  # overrides the sticky configured model
+    use_rag: bool = False  # ground the reply in the active game's knowledge base
+
+
+class KbSearch(BaseModel):
+    query: str
+    k: int = 5
 
 
 class ConversationCreate(BaseModel):
@@ -78,6 +84,7 @@ class DocumentCreate(BaseModel):
     title: str
     body_markdown: str = ""
     source: str = "manual"
+    in_kb: bool = True  # new docs join the knowledge base by default
 
 
 class DocumentUpdate(BaseModel):
@@ -107,6 +114,28 @@ def create_app(data_dir: Path) -> FastAPI:
         if ws_id is None or workspaces.get(ws_id) is None:
             raise HTTPException(status_code=409, detail="no active workspace")
         return ws_id
+
+    async def embed_doc(ws_id: int, doc: dict, embed_model: str) -> None:
+        """Chunk + embed one document into the KB (or unindex it if empty)."""
+        chunks = rag.chunk_text(doc["body_markdown"])
+        if not chunks:
+            workspaces.unindex_document(ws_id, doc["id"])
+            return
+        embeddings = await ollama.embed(embed_model, chunks)
+        workspaces.ensure_vec_table(ws_id, len(embeddings[0]))
+        workspaces.index_document(ws_id, doc["id"], chunks, embeddings)
+
+    async def reindex_workspace(ws_id: int, embed_model: str) -> int:
+        """(Re)embed every in-KB document — used after the embed model changes."""
+        count = 0
+        for meta in workspaces.list_documents(ws_id):
+            if not meta["in_kb"]:
+                continue
+            doc = workspaces.get_document(ws_id, meta["id"])
+            if doc:
+                await embed_doc(ws_id, doc, embed_model)
+                count += 1
+        return count
 
     @app.get("/health")
     def health() -> dict:
@@ -168,10 +197,15 @@ def create_app(data_dir: Path) -> FastAPI:
         return {"documents": workspaces.list_documents(active_ws_id())}
 
     @app.post("/documents")
-    def create_document(req: DocumentCreate) -> dict:
-        return workspaces.create_document(
-            active_ws_id(), req.title, req.body_markdown, req.source
+    async def create_document(req: DocumentCreate) -> dict:
+        ws_id = active_ws_id()
+        doc = workspaces.create_document(
+            ws_id, req.title, req.body_markdown, req.source, req.in_kb
         )
+        embed_model = settings.get("embed_model")
+        if doc["in_kb"] and embed_model:
+            await embed_doc(ws_id, doc, embed_model)
+        return doc
 
     @app.get("/documents/{doc_id}")
     def get_document(doc_id: int) -> dict:
@@ -181,18 +215,53 @@ def create_app(data_dir: Path) -> FastAPI:
         return doc
 
     @app.put("/documents/{doc_id}")
-    def update_document(doc_id: int, req: DocumentUpdate) -> dict:
+    async def update_document(doc_id: int, req: DocumentUpdate) -> dict:
+        ws_id = active_ws_id()
         doc = workspaces.update_document(
-            active_ws_id(), doc_id, req.model_dump(exclude_none=True)
+            ws_id, doc_id, req.model_dump(exclude_none=True)
         )
         if doc is None:
             raise HTTPException(status_code=404, detail="no such document")
+        # Keep the KB index in step with the in_kb flag / body.
+        embed_model = settings.get("embed_model")
+        if doc["in_kb"] and embed_model:
+            await embed_doc(ws_id, doc, embed_model)
+        elif not doc["in_kb"]:
+            workspaces.unindex_document(ws_id, doc_id)
         return doc
 
     @app.delete("/documents/{doc_id}")
     def delete_document(doc_id: int) -> dict:
         workspaces.delete_document(active_ws_id(), doc_id)
         return {"deleted": doc_id}
+
+    # ---- knowledge base ---------------------------------------------------
+
+    @app.post("/kb/reindex")
+    async def kb_reindex() -> dict:
+        ws_id = active_ws_id()
+        embed_model = settings.get("embed_model")
+        if not embed_model:
+            raise HTTPException(
+                status_code=409, detail="select an embedding model in settings first"
+            )
+        try:
+            count = await reindex_workspace(ws_id, embed_model)
+        except OllamaError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"indexed": count}
+
+    @app.post("/kb/search")
+    async def kb_search(req: KbSearch) -> dict:
+        ws_id = active_ws_id()
+        embed_model = settings.get("embed_model")
+        if not embed_model:
+            raise HTTPException(status_code=400, detail="no embedding model selected")
+        try:
+            qv = (await ollama.embed(embed_model, [req.query]))[0]
+        except OllamaError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"results": workspaces.search(ws_id, qv, req.k)}
 
     @app.get("/models")
     async def models() -> dict:
@@ -257,11 +326,36 @@ def create_app(data_dir: Path) -> FastAPI:
         if system_prompt:
             messages.insert(0, {"role": "system", "content": system_prompt})
 
+        # RAG: retrieve from the active game's KB and ground the reply in it.
+        sources: list[dict] = []
+        embed_model = cfg.get("embed_model")
+        if req.use_rag and embed_model:
+            try:
+                qv = (await ollama.embed(embed_model, [req.content]))[0]
+                hits = workspaces.search(ws_id, qv, 5)
+            except OllamaError:
+                hits = []
+            if hits:
+                # Inject context just before the latest user turn.
+                messages.insert(
+                    len(messages) - 1,
+                    {"role": "system", "content": rag.build_context(hits)},
+                )
+                seen: set[int] = set()
+                for h in hits:
+                    if h["document_id"] not in seen:
+                        seen.add(h["document_id"])
+                        sources.append(
+                            {"document_id": h["document_id"], "title": h["title"]}
+                        )
+
         options = cfg.get("gen_params") or {}
 
         async def event_stream():
             reply = []
             try:
+                if sources:
+                    yield f"data: {json.dumps({'sources': sources})}\n\n"
                 async for token in ollama.chat_stream(model, messages, options):
                     reply.append(token)
                     yield f"data: {json.dumps({'token': token})}\n\n"
