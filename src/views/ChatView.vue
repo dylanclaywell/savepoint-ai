@@ -423,20 +423,22 @@ function onKeydown(e: KeyboardEvent) {
       </button>
       <button
         type="button"
-        class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-ui text-[0.74rem] transition"
+        :disabled="!hasWebKey"
+        class="flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-ui text-[0.74rem] transition disabled:cursor-not-allowed disabled:opacity-50"
         :class="
-          useWeb
+          useWeb && hasWebKey
             ? 'border-red bg-red-soft text-red'
             : 'border-line text-ink-soft hover:text-ink'
         "
         :title="
           hasWebKey
             ? 'Let the partner search the web when it decides it is needed (queries leave your machine)'
-            : 'Add a Tavily API key in Settings to use this'
+            : 'Add a Tavily API key in Settings to enable web search'
         "
         @click="useWeb = !useWeb"
       >
-        <PhGlobe :size="14" :weight="useWeb ? 'bold' : 'light'" /> Web
+        <PhGlobe :size="14" :weight="useWeb && hasWebKey ? 'bold' : 'light'" />
+        Web{{ hasWebKey ? "" : " (needs key)" }}
       </button>
     </div>
 
