@@ -90,8 +90,10 @@ async function send() {
   errorMsg.value = "";
   messages.value.push({ role: "user", content: text });
   draft.value = "";
-  const assistant: Msg = { role: "assistant", content: "" };
-  messages.value.push(assistant);
+  messages.value.push({ role: "assistant", content: "" });
+  // Mutate the reactive array element (not the raw object) so streamed updates
+  // trigger re-renders. Mutating the pre-push object bypasses Vue's proxy.
+  const assistant = messages.value[messages.value.length - 1];
   streaming.value = true;
   status.value = useRag.value ? "searching" : "thinking";
   await scrollToBottom();
